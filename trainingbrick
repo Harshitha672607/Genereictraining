@@ -1,0 +1,499 @@
+name: model training
+inputs:
+  - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
+  - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
+  - {name: model_type, type: String, description: "classification or regression", optional: true, default: "classification"}
+  - {name: enbalance, type: String, description: "true/false for class imbalance handling (classification only)", optional: true, default: "true"}
+  - {name: target_column, type: String, description: "Optional. Column name inside y parquet if it has multiple columns", optional: true, default: ""}
+  - {name: preprocess_metadata, type: Data, description: "Optional metadata from preprocessing (for reference)", optional: true}
+  - {name: model_name, type: String, description: "Model to train: linear | logistic | polynomial", optional: true, default: "logistic"}
+  - {name: use_scaler, type: String, description: "true/false. If true, apply StandardScaler (recommended for linear models)", optional: true, default: "true"}
+  - {name: fit_intercept, type: String, description: "Whether to calculate intercept for linear/logistic regression", optional: true, default: "true"}
+  - {name: regularization, type: String, description: "Regularization type: none | l1 | l2 | elasticnet", optional: true, default: "none"}
+  - {name: C_value, type: Float, description: "Inverse of regularization strength (smaller values = stronger regularization)", optional: true, default: "1.0"}
+  - {name: poly_degree, type: Integer, description: "Degree for polynomial features (for polynomial regression only)", optional: true, default: "2"}
+  - {name: solver, type: String, description: "Solver for logistic regression: lbfgs | liblinear | newton-cg | sag | saga", optional: true, default: "lbfgs"}
+  - {name: max_iter, type: Integer, description: "Maximum iterations for optimization", optional: true, default: "100"}
+  - {name: random_state, type: Integer, description: "Random seed for reproducibility", optional: true, default: "48"}
+
+outputs:
+  - {name: model_pickle, type: Data, description: "Pickled trained model (.pkl)"}
+  - {name: metrics_json, type: Data, description: "Training metrics JSON"}
+  - {name: model_config, type: Data, description: "Model configuration JSON (hyperparameters & metadata)"}
+
+implementation:
+  container:
+    image: kumar2004/ml-base:v1
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse, os, sys, json, traceback
+        import pandas as pd, numpy as np, joblib
+        from sklearn.preprocessing import LabelEncoder, StandardScaler, PolynomialFeatures
+        from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge, Lasso, ElasticNet
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, r2_score, mean_squared_error, mean_absolute_error, log_loss
+        from sklearn.utils.class_weight import compute_sample_weight
+        from sklearn.model_selection import cross_val_score
+        from sklearn.pipeline import Pipeline
+
+        def ensure_dir_for(p):
+            d = os.path.dirname(p)
+            if d and not os.path.exists(d):
+                os.makedirs(d, exist_ok=True)
+
+        def bool_from_str(s):
+            return str(s).strip().lower() in ("1","true","t","yes","y")
+
+        def load_parquet_df(path):
+            return pd.read_parquet(path, engine="auto")
+
+        def try_load_metadata(path):
+            if not path or not os.path.exists(path):
+                return None
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+            try:
+                return joblib.load(path)
+            except Exception:
+                return None
+
+        ap = argparse.ArgumentParser()
+        ap.add_argument('--X_data', type=str, required=True)
+        ap.add_argument('--y_data', type=str, required=True)
+        ap.add_argument('--model_type', type=str, default="classification")
+        ap.add_argument('--enbalance', type=str, default="true")
+        ap.add_argument('--target_column', type=str, default="")
+        ap.add_argument('--preprocess_metadata', type=str, default="")
+        ap.add_argument('--model_name', type=str, default="logistic")
+        ap.add_argument('--use_scaler', type=str, default="true")
+        ap.add_argument('--fit_intercept', type=str, default="true")
+        ap.add_argument('--regularization', type=str, default="none")
+        ap.add_argument('--C_value', type=float, default=1.0)
+        ap.add_argument('--poly_degree', type=int, default=2)
+        ap.add_argument('--solver', type=str, default="lbfgs")
+        ap.add_argument('--max_iter', type=int, default=100)
+        ap.add_argument('--random_state', type=int, default=48)
+        ap.add_argument('--model_pickle', type=str, required=True)
+        ap.add_argument('--metrics_json', type=str, required=True)
+        ap.add_argument('--model_config', type=str, required=True)
+        args = ap.parse_args()
+
+        try:
+            print("="*80)
+            print("LINEAR MODELS TRAINING STARTED (linear | logistic | polynomial)")
+            print("="*80)
+
+            X = load_parquet_df(args.X_data)
+            print(f"[INFO] X shape: {X.shape}")
+            print("[INFO] First 5 rows of X:")
+            print(X.head())
+
+            y_df = load_parquet_df(args.y_data)
+            if isinstance(y_df, pd.DataFrame):
+                if y_df.shape[1] == 1 and not args.target_column:
+                    y = y_df.iloc[:, 0].copy()
+                    print(f"[INFO] Auto-detected single column: {y_df.columns[0]}")
+                else:
+                    col = args.target_column.strip()
+                    if not col:
+                        raise ValueError(f"y parquet has {y_df.shape[1]} columns. Provide --target_column. Available: {list(y_df.columns)}")
+                    y = y_df[col].copy()
+            else:
+                y = pd.Series(y_df).copy()
+
+            # align lengths/indices if mismatch
+            if len(X) != len(y):
+                print(f"[WARN] Length mismatch: X={len(X)}, y={len(y)}")
+                common_idx = X.index.intersection(y.index)
+                if len(common_idx) > 0:
+                    X = X.loc[common_idx].sort_index()
+                    y = y.loc[common_idx].sort_index()
+                else:
+                    m = min(len(X), len(y))
+                    X = X.reset_index(drop=True).iloc[:m, :].copy()
+                    y = y.reset_index(drop=True).iloc[:m].copy()
+
+            print("===== TARGET VARIABLE INFO =====")
+            task = args.model_type.strip().lower()
+            
+            if task == "classification":
+                print("Classification task - target distribution:")
+                print(y.value_counts(dropna=False).to_string())
+                print(f"Unique classes: {y.nunique()}")
+                print("Class distribution percentages:")
+                print((y.value_counts(dropna=False, normalize=True) * 100).round(2).to_string())
+            else:
+                print("Regression task - target statistics:")
+                print(f"Min: {y.min():.4f}")
+                print(f"Max: {y.max():.4f}")
+                print(f"Mean: {y.mean():.4f}")
+                print(f"Std: {y.std():.4f}")
+                print(f"Missing values: {y.isna().sum()}")
+
+            metrics = {"task": task, "samples": int(len(y)), "features": int(X.shape[1])}
+            model_name = args.model_name.strip().lower()
+            model_obj = None
+
+            # prepare model config skeleton
+            model_config = {
+                "model_name": model_name,
+                "task": task,
+                "random_state": int(args.random_state),
+                "params": {}
+            }
+
+            if task == "classification":
+                print("[INFO] Classification task detected")
+                
+                if model_name != "logistic":
+                    raise ValueError(f"For classification, only 'logistic' model is supported. Got: {model_name}")
+                
+                meta = try_load_metadata(args.preprocess_metadata)
+                label_mapping = meta.get("label_mapping") if meta else None
+
+                try:
+                    y_prepared = pd.Series(y).astype(int)
+                    map_info = {"mode": "already_encoded", "label_mapping_reference": label_mapping}
+                except Exception:
+                    le = LabelEncoder()
+                    y_prepared = pd.Series(le.fit_transform(y.astype(str)), index=y.index)
+                    map_info = {"mode": "label_encoder_fallback", "classes": le.classes_.tolist()}
+
+                valid_mask = y_prepared.notna()
+                if not valid_mask.all():
+                    dropped = int((~valid_mask).sum())
+                    X = X.loc[valid_mask].reset_index(drop=True)
+                    y_prepared = y_prepared[valid_mask].reset_index(drop=True)
+                    print(f"[WARN] Dropped {dropped} invalid rows")
+
+                sample_weight = None
+                if bool_from_str(args.enbalance):
+                    print("[INFO] Computing sample weights for imbalance")
+                    try:
+                        sample_weight = compute_sample_weight(class_weight='balanced', y=y_prepared)
+                    except Exception as e:
+                        print(f"[WARN] Could not compute sample weights: {e}")
+
+                print(f"[INFO] Training Logistic Regression")
+                print(f"  - solver: {args.solver}")
+                print(f"  - C: {args.C_value}")
+                print(f"  - regularization: {args.regularization}")
+                print(f"  - fit_intercept: {args.fit_intercept}")
+                print(f"  - max_iter: {args.max_iter}")
+                print(f"  - use_scaler: {args.use_scaler}")
+                print(f"  - class_balance: {args.enbalance}")
+                
+                # Determine class weight
+                class_weight_val = 'balanced' if bool_from_str(args.enbalance) else None
+                
+                # Handle regularization
+                penalty_map = {
+                    'none': None,
+                    'l1': 'l1',
+                    'l2': 'l2',
+                    'elasticnet': 'elasticnet'
+                }
+                penalty = penalty_map.get(args.regularization, None)
+                
+                # Adjust solver based on penalty
+                solver = args.solver
+                if penalty == 'l1':
+                    if solver not in ['liblinear', 'saga']:
+                        solver = 'liblinear'
+                        print(f"[INFO] Changed solver to {solver} for L1 regularization")
+                elif penalty == 'elasticnet':
+                    if solver != 'saga':
+                        solver = 'saga'
+                        print(f"[INFO] Changed solver to {solver} for elasticnet regularization")
+                
+                # Create logistic regression model
+                lr_model = LogisticRegression(
+                    penalty=penalty,
+                    C=float(args.C_value),
+                    fit_intercept=bool_from_str(args.fit_intercept),
+                    class_weight=class_weight_val,
+                    solver=solver,
+                    max_iter=int(args.max_iter),
+                    random_state=int(args.random_state)
+                )
+                
+                # Scale if requested
+                if bool_from_str(args.use_scaler):
+                    clf = Pipeline([('scaler', StandardScaler()), ('est', lr_model)])
+                else:
+                    clf = lr_model
+                    
+                model_config["params"] = {
+                    "solver": solver,
+                    "C": float(args.C_value),
+                    "penalty": penalty,
+                    "fit_intercept": bool_from_str(args.fit_intercept),
+                    "max_iter": int(args.max_iter),
+                    "class_weight": class_weight_val,
+                    "use_scaler": bool_from_str(args.use_scaler)
+                }
+
+                # cross-validation
+                try:
+                    cv_scores = cross_val_score(clf, X, y_prepared, cv=5, scoring='accuracy')
+                    metrics["cv_accuracy_mean"] = float(cv_scores.mean())
+                    metrics["cv_accuracy_std"] = float(cv_scores.std())
+                    print(f"[INFO] CV Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+                except Exception as e:
+                    print(f"[WARN] CV failed: {e}")
+
+                # fit model
+                try:
+                    if sample_weight is not None:
+                        clf.fit(X, y_prepared, sample_weight=sample_weight)
+                    else:
+                        clf.fit(X, y_prepared)
+                except Exception as e:
+                    print(f"[ERROR] Fit failed: {e}")
+                    raise
+
+                # predictions and metrics
+                y_pred = clf.predict(X)
+                y_pred_proba = clf.predict_proba(X) if hasattr(clf, "predict_proba") else None
+                
+                metrics.update({
+                    "accuracy_train": float(accuracy_score(y_prepared, y_pred)),
+                    "precision_train": float(precision_score(y_prepared, y_pred, average='weighted', zero_division=0)),
+                    "recall_train": float(recall_score(y_prepared, y_pred, average='weighted', zero_division=0)),
+                    "f1_train": float(f1_score(y_prepared, y_pred, average='weighted', zero_division=0)),
+                    "model": model_name,
+                    "balanced": bool_from_str(args.enbalance),
+                    "label_info": map_info
+                })
+                
+                # Add log loss if probabilities available
+                if y_pred_proba is not None:
+                    try:
+                        metrics["log_loss_train"] = float(log_loss(y_prepared, y_pred_proba))
+                    except Exception:
+                        pass
+
+                model_obj = clf
+
+            elif task == "regression":
+                print("[INFO] Regression task detected")
+                
+                if model_name not in ["linear", "polynomial"]:
+                    raise ValueError(f"For regression, only 'linear' or 'polynomial' models are supported. Got: {model_name}")
+                
+                y_num = pd.to_numeric(y, errors="coerce")
+                valid_mask = y_num.notna()
+                if not valid_mask.all():
+                    dropped = int((~valid_mask).sum())
+                    print(f"[WARN] Dropping {dropped} rows with non-numeric target")
+                    X = X.loc[valid_mask].reset_index(drop=True)
+                    y_num = y_num[valid_mask].reset_index(drop=True)
+
+                if model_name == "linear":
+                    print(f"[INFO] Training Linear Regression")
+                    print(f"  - regularization: {args.regularization}")
+                    print(f"  - C: {args.C_value}")
+                    print(f"  - fit_intercept: {args.fit_intercept}")
+                    print(f"  - max_iter: {args.max_iter}")
+                    print(f"  - use_scaler: {args.use_scaler}")
+                    
+                    # Handle regularization
+                    if args.regularization == "none":
+                        reg = LinearRegression(fit_intercept=bool_from_str(args.fit_intercept))
+                    elif args.regularization == "l2":
+                        reg = Ridge(alpha=1.0/float(args.C_value) if float(args.C_value) > 0 else 1.0, 
+                                  fit_intercept=bool_from_str(args.fit_intercept), 
+                                  random_state=int(args.random_state),
+                                  max_iter=int(args.max_iter))
+                    elif args.regularization == "l1":
+                        reg = Lasso(alpha=1.0/float(args.C_value) if float(args.C_value) > 0 else 1.0,
+                                  fit_intercept=bool_from_str(args.fit_intercept),
+                                  random_state=int(args.random_state),
+                                  max_iter=int(args.max_iter))
+                    elif args.regularization == "elasticnet":
+                        reg = ElasticNet(alpha=1.0/float(args.C_value) if float(args.C_value) > 0 else 1.0,
+                                       l1_ratio=0.5,
+                                       fit_intercept=bool_from_str(args.fit_intercept),
+                                       random_state=int(args.random_state),
+                                       max_iter=int(args.max_iter))
+                    else:
+                        raise ValueError(f"Unknown regularization type: {args.regularization}")
+                    
+                    # Scale if requested
+                    if bool_from_str(args.use_scaler):
+                        reg = Pipeline([('scaler', StandardScaler()), ('est', reg)])
+                    
+                    model_config["params"] = {
+                        "fit_intercept": bool_from_str(args.fit_intercept),
+                        "regularization": args.regularization,
+                        "C": float(args.C_value),
+                        "max_iter": int(args.max_iter),
+                        "use_scaler": bool_from_str(args.use_scaler)
+                    }
+
+                elif model_name == "polynomial":
+                    print(f"[INFO] Training Polynomial Regression")
+                    print(f"  - degree: {args.poly_degree}")
+                    print(f"  - regularization: {args.regularization}")
+                    print(f"  - C: {args.C_value}")
+                    print(f"  - fit_intercept: {args.fit_intercept}")
+                    print(f"  - max_iter: {args.max_iter}")
+                    print(f"  - use_scaler: {args.use_scaler}")
+                    
+                    # Create polynomial features pipeline
+                    poly_steps = [('poly', PolynomialFeatures(degree=int(args.poly_degree), include_bias=False))]
+                    
+                    # Add scaler if requested
+                    if bool_from_str(args.use_scaler):
+                        poly_steps.append(('scaler', StandardScaler()))
+                    
+                    # Add linear regression with optional regularization
+                    if args.regularization == "none":
+                        linear_model = LinearRegression(fit_intercept=bool_from_str(args.fit_intercept))
+                    elif args.regularization == "l2":
+                        linear_model = Ridge(alpha=1.0/float(args.C_value) if float(args.C_value) > 0 else 1.0,
+                                           fit_intercept=bool_from_str(args.fit_intercept),
+                                           random_state=int(args.random_state),
+                                           max_iter=int(args.max_iter))
+                    elif args.regularization == "l1":
+                        linear_model = Lasso(alpha=1.0/float(args.C_value) if float(args.C_value) > 0 else 1.0,
+                                           fit_intercept=bool_from_str(args.fit_intercept),
+                                           random_state=int(args.random_state),
+                                           max_iter=int(args.max_iter))
+                    elif args.regularization == "elasticnet":
+                        linear_model = ElasticNet(alpha=1.0/float(args.C_value) if float(args.C_value) > 0 else 1.0,
+                                                l1_ratio=0.5,
+                                                fit_intercept=bool_from_str(args.fit_intercept),
+                                                random_state=int(args.random_state),
+                                                max_iter=int(args.max_iter))
+                    
+                    poly_steps.append(('linear', linear_model))
+                    reg = Pipeline(poly_steps)
+                    
+                    model_config["params"] = {
+                        "degree": int(args.poly_degree),
+                        "fit_intercept": bool_from_str(args.fit_intercept),
+                        "regularization": args.regularization,
+                        "C": float(args.C_value),
+                        "max_iter": int(args.max_iter),
+                        "use_scaler": bool_from_str(args.use_scaler)
+                    }
+
+                # cross-validation
+                try:
+                    cv_scores = cross_val_score(reg, X, y_num, cv=5, scoring='r2')
+                    metrics["cv_r2_mean"] = float(cv_scores.mean())
+                    metrics["cv_r2_std"] = float(cv_scores.std())
+                    print(f"[INFO] CV R2: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+                except Exception as e:
+                    print(f"[WARN] CV failed: {e}")
+
+                # fit model
+                try:
+                    reg.fit(X, y_num)
+                except Exception as e:
+                    print(f"[ERROR] Fit failed: {e}")
+                    raise
+
+                # predictions and metrics
+                y_pred = reg.predict(X)
+                metrics.update({
+                    "r2_train": float(r2_score(y_num, y_pred)),
+                    "rmse_train": float(np.sqrt(mean_squared_error(y_num, y_pred))),
+                    "mae_train": float(mean_absolute_error(y_num, y_pred)),
+                    "mse_train": float(mean_squared_error(y_num, y_pred)),
+                    "model": model_name
+                })
+                
+                # Add polynomial-specific info
+                if model_name == "polynomial":
+                    try:
+                        # Get feature names after polynomial transformation
+                        if hasattr(reg, 'named_steps'):
+                            poly_step = reg.named_steps.get('poly')
+                            if poly_step:
+                                n_features_in = poly_step.n_features_in_
+                                n_features_out = poly_step.n_output_features_
+                                metrics["poly_features_in"] = int(n_features_in)
+                                metrics["poly_features_out"] = int(n_features_out)
+                                print(f"[INFO] Polynomial features transformed: {n_features_in} -> {n_features_out}")
+                    except Exception:
+                        pass
+
+                model_obj = reg
+
+            else:
+                raise ValueError(f"Unsupported model_type '{args.model_type}'. Must be 'classification' or 'regression'.")
+
+            # finalize model_config
+            model_config["trained_samples"] = int(len(X))
+            model_config["trained_features"] = int(X.shape[1])
+
+            # save model, metrics and config
+            ensure_dir_for(args.model_pickle)
+            joblib.dump(model_obj, args.model_pickle)
+
+            ensure_dir_for(args.metrics_json)
+            with open(args.metrics_json, "w", encoding="utf-8") as f:
+                json.dump(metrics, f, indent=2, ensure_ascii=False)
+
+            ensure_dir_for(args.model_config)
+            with open(args.model_config, "w", encoding="utf-8") as f:
+                json.dump(model_config, f, indent=2, ensure_ascii=False)
+
+            print("="*80)
+            print("SUCCESS: Training completed")
+            print("Model saved to:", args.model_pickle)
+            print("Metrics saved to:", args.metrics_json)
+            print("Model config saved to:", args.model_config)
+            print("="*80)
+
+        except Exception as e:
+            print("="*80, file=sys.stderr)
+            print("ERROR DURING TRAINING", file=sys.stderr)
+            traceback.print_exc()
+            print("="*80, file=sys.stderr)
+            sys.exit(1)
+
+    args:
+      - --X_data
+      - {inputPath: X_data}
+      - --y_data
+      - {inputPath: y_data}
+      - --model_type
+      - {inputValue: model_type}
+      - --enbalance
+      - {inputValue: enbalance}
+      - --target_column
+      - {inputValue: target_column}
+      - --preprocess_metadata
+      - {inputPath: preprocess_metadata}
+      - --model_name
+      - {inputValue: model_name}
+      - --use_scaler
+      - {inputValue: use_scaler}
+      - --fit_intercept
+      - {inputValue: fit_intercept}
+      - --regularization
+      - {inputValue: regularization}
+      - --C_value
+      - {inputValue: C_value}
+      - --poly_degree
+      - {inputValue: poly_degree}
+      - --solver
+      - {inputValue: solver}
+      - --max_iter
+      - {inputValue: max_iter}
+      - --random_state
+      - {inputValue: random_state}
+      - --model_pickle
+      - {outputPath: model_pickle}
+      - --metrics_json
+      - {outputPath: metrics_json}
+      - --model_config
+      - {outputPath: model_config}
