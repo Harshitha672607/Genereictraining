@@ -1,4 +1,4 @@
-name: model training 1812
+name: model training 18
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
@@ -129,24 +129,34 @@ implementation:
                 print((y.value_counts(dropna=False, normalize=True) * 100).round(2).to_string())
             else:
                 # For regression, convert to numeric first before printing statistics
-                print("Regression task - attempting to convert target to numeric...")
+                print("Regression task - converting target to numeric...")
                 y_numeric_check = pd.to_numeric(y, errors="coerce")
                 valid_numeric = y_numeric_check.notna()
                 
                 if valid_numeric.sum() == 0:
+                    print("[ERROR] Target variable contains no valid numeric values")
+                    print(f"[ERROR] Sample values from target: {y.head(10).tolist()}")
                     raise ValueError("Target variable contains no valid numeric values for regression task")
                 
                 if not valid_numeric.all():
-                    print(f"[WARN] Found {(~valid_numeric).sum()} non-numeric values in target")
-                    print(f"[WARN] Sample of non-numeric values: {y[~valid_numeric].head().tolist()}")
+                    invalid_count = int((~valid_numeric).sum())
+                    print(f"[WARN] Found {invalid_count} non-numeric values in target")
+                    print(f"[WARN] Sample of non-numeric values: {y[~valid_numeric].head(5).tolist()}")
+                
+                # Calculate statistics safely
+                y_valid = y_numeric_check[valid_numeric]
+                min_val = float(y_valid.min())
+                max_val = float(y_valid.max())
+                mean_val = float(y_valid.mean())
+                std_val = float(y_valid.std())
                 
                 print("Target statistics (numeric values only):")
-                print(f"Min: {y_numeric_check[valid_numeric].min():.4f}")
-                print(f"Max: {y_numeric_check[valid_numeric].max():.4f}")
-                print(f"Mean: {y_numeric_check[valid_numeric].mean():.4f}")
-                print(f"Std: {y_numeric_check[valid_numeric].std():.4f}")
-                print(f"Valid numeric values: {valid_numeric.sum()}")
-                print(f"Missing/invalid values: {(~valid_numeric).sum()}")
+                print(f"Min: {min_val:.4f}")
+                print(f"Max: {max_val:.4f}")
+                print(f"Mean: {mean_val:.4f}")
+                print(f"Std: {std_val:.4f}")
+                print(f"Valid numeric values: {int(valid_numeric.sum())}")
+                print(f"Missing/invalid values: {int((~valid_numeric).sum())}")
 
             metrics = {"task": task, "samples": int(len(y)), "features": int(X.shape[1])}
             model_name = args.model_name.strip().lower()
