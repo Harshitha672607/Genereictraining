@@ -1,4 +1,4 @@
-name: model training 18
+name: model training 1827
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
@@ -6,7 +6,7 @@ inputs:
   - {name: enbalance, type: String, description: "true/false for class imbalance handling (classification only)", optional: true, default: "true"}
   - {name: target_column, type: String, description: "Optional. Column name inside y parquet if it has multiple columns", optional: true, default: ""}
   - {name: preprocess_metadata, type: Data, description: "Optional metadata from preprocessing (for reference)", optional: true}
-  - {name: model_name, type: String, description: "Model to train: linear | logistic | polynomial", optional: true, default: "logistic"}
+  - {name: model_name, type: String, description: "Model to train: linear | logistic | polynomial | random_forest", optional: true, default: "logistic"}
   - {name: use_scaler, type: String, description: "true/false. If true, apply StandardScaler (recommended for linear models)", optional: true, default: "true"}
   - {name: fit_intercept, type: String, description: "Whether to calculate intercept for linear/logistic regression", optional: true, default: "true"}
   - {name: regularization, type: String, description: "Regularization type: none | l1 | l2 | elasticnet", optional: true, default: "none"}
@@ -15,6 +15,13 @@ inputs:
   - {name: solver, type: String, description: "Solver for logistic regression: lbfgs | liblinear | newton-cg | sag | saga", optional: true, default: "lbfgs"}
   - {name: max_iter, type: Integer, description: "Maximum iterations for optimization", optional: true, default: "100"}
   - {name: random_state, type: Integer, description: "Random seed for reproducibility", optional: true, default: "48"}
+  - {name: n_estimators, type: Integer, description: "Number of trees in random forest", optional: true, default: "100"}
+  - {name: max_depth, type: Integer, description: "Maximum depth of trees in random forest (0 for unlimited)", optional: true, default: "0"}
+  - {name: min_samples_split, type: Integer, description: "Minimum samples required to split a node", optional: true, default: "2"}
+  - {name: min_samples_leaf, type: Integer, description: "Minimum samples required at a leaf node", optional: true, default: "1"}
+  - {name: max_features, type: String, description: "Number of features to consider for best split: auto | sqrt | log2 | number or percentage", optional: true, default: "auto"}
+  - {name: bootstrap, type: String, description: "Whether to use bootstrap samples when building trees", optional: true, default: "true"}
+  - {name: oob_score, type: String, description: "Whether to calculate out-of-bag score (random forest)", optional: true, default: "false"}
 
 outputs:
   - {name: model_pickle, type: Data, description: "Pickled trained model (.pkl)"}
@@ -33,7 +40,8 @@ implementation:
         import pandas as pd, numpy as np, joblib
         from sklearn.preprocessing import LabelEncoder, StandardScaler, PolynomialFeatures
         from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge, Lasso, ElasticNet
-        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, r2_score, mean_squared_error, mean_absolute_error, log_loss
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, r2_score, mean_squared_error, mean_absolute_error, log_loss, roc_auc_score
         from sklearn.utils.class_weight import compute_sample_weight
         from sklearn.model_selection import cross_val_score
         from sklearn.pipeline import Pipeline
@@ -62,6 +70,36 @@ implementation:
             except Exception:
                 return None
 
+        def parse_max_features(max_features_str, n_features):
+            """Parse max_features parameter for random forest"""
+            max_features_str = str(max_features_str).strip().lower()
+            
+            if max_features_str == "auto":
+                return "sqrt"
+            elif max_features_str == "sqrt":
+                return "sqrt"
+            elif max_features_str == "log2":
+                return "log2"
+            elif max_features_str.endswith("%"):
+                # Percentage
+                try:
+                    percentage = float(max_features_str[:-1]) / 100.0
+                    return max(1, int(n_features * percentage))
+                except:
+                    return "sqrt"
+            else:
+                # Try to parse as integer
+                try:
+                    val = int(max_features_str)
+                    return max(1, min(val, n_features))
+                except:
+                    # Try to parse as float
+                    try:
+                        val = float(max_features_str)
+                        return max(1, int(n_features * val))
+                    except:
+                        return "sqrt"
+
         ap = argparse.ArgumentParser()
         ap.add_argument('--X_data', type=str, required=True)
         ap.add_argument('--y_data', type=str, required=True)
@@ -78,6 +116,13 @@ implementation:
         ap.add_argument('--solver', type=str, default="lbfgs")
         ap.add_argument('--max_iter', type=int, default=100)
         ap.add_argument('--random_state', type=int, default=48)
+        ap.add_argument('--n_estimators', type=int, default=100)
+        ap.add_argument('--max_depth', type=int, default=0)
+        ap.add_argument('--min_samples_split', type=int, default=2)
+        ap.add_argument('--min_samples_leaf', type=int, default=1)
+        ap.add_argument('--max_features', type=str, default="auto")
+        ap.add_argument('--bootstrap', type=str, default="true")
+        ap.add_argument('--oob_score', type=str, default="false")
         ap.add_argument('--model_pickle', type=str, required=True)
         ap.add_argument('--metrics_json', type=str, required=True)
         ap.add_argument('--model_config', type=str, required=True)
@@ -85,7 +130,7 @@ implementation:
 
         try:
             print("="*80)
-            print("LINEAR MODELS TRAINING STARTED (linear | logistic | polynomial)")
+            print("MODEL TRAINING STARTED (linear | logistic | polynomial | random_forest)")
             print("="*80)
 
             X = load_parquet_df(args.X_data)
@@ -173,9 +218,7 @@ implementation:
             if task == "classification":
                 print("[INFO] Classification task detected")
                 
-                if model_name != "logistic":
-                    raise ValueError(f"For classification, only 'logistic' model is supported. Got: {model_name}")
-                
+                # Prepare target for classification
                 meta = try_load_metadata(args.preprocess_metadata)
                 label_mapping = meta.get("label_mapping") if meta else None
 
@@ -194,85 +237,134 @@ implementation:
                     y_prepared = y_prepared[valid_mask].reset_index(drop=True)
                     print(f"[WARN] Dropped {dropped} invalid rows")
 
+                if model_name == "logistic":
+                    print(f"[INFO] Training Logistic Regression")
+                    print(f"  - solver: {args.solver}")
+                    print(f"  - C: {args.C_value}")
+                    print(f"  - regularization: {args.regularization}")
+                    print(f"  - fit_intercept: {args.fit_intercept}")
+                    print(f"  - max_iter: {args.max_iter}")
+                    print(f"  - use_scaler: {args.use_scaler}")
+                    print(f"  - class_balance: {args.enbalance}")
+                    
+                    # Determine class weight
+                    class_weight_val = 'balanced' if bool_from_str(args.enbalance) else None
+                    
+                    # Handle regularization
+                    penalty_map = {
+                        'none': None,
+                        'l1': 'l1',
+                        'l2': 'l2',
+                        'elasticnet': 'elasticnet'
+                    }
+                    penalty = penalty_map.get(args.regularization, None)
+                    
+                    # Adjust solver based on penalty
+                    solver = args.solver
+                    if penalty == 'l1':
+                        if solver not in ['liblinear', 'saga']:
+                            solver = 'liblinear'
+                            print(f"[INFO] Changed solver to {solver} for L1 regularization")
+                    elif penalty == 'elasticnet':
+                        if solver != 'saga':
+                            solver = 'saga'
+                            print(f"[INFO] Changed solver to {solver} for elasticnet regularization")
+                    
+                    # Create logistic regression model
+                    lr_model = LogisticRegression(
+                        penalty=penalty,
+                        C=float(args.C_value),
+                        fit_intercept=bool_from_str(args.fit_intercept),
+                        class_weight=class_weight_val,
+                        solver=solver,
+                        max_iter=int(args.max_iter),
+                        random_state=int(args.random_state)
+                    )
+                    
+                    # Scale if requested
+                    if bool_from_str(args.use_scaler):
+                        clf = Pipeline([('scaler', StandardScaler()), ('est', lr_model)])
+                    else:
+                        clf = lr_model
+                        
+                    model_config["params"] = {
+                        "solver": solver,
+                        "C": float(args.C_value),
+                        "penalty": penalty,
+                        "fit_intercept": bool_from_str(args.fit_intercept),
+                        "max_iter": int(args.max_iter),
+                        "class_weight": class_weight_val,
+                        "use_scaler": bool_from_str(args.use_scaler)
+                    }
+
+                elif model_name == "random_forest":
+                    print(f"[INFO] Training Random Forest Classifier")
+                    print(f"  - n_estimators: {args.n_estimators}")
+                    print(f"  - max_depth: {args.max_depth} (0 = unlimited)")
+                    print(f"  - min_samples_split: {args.min_samples_split}")
+                    print(f"  - min_samples_leaf: {args.min_samples_leaf}")
+                    print(f"  - max_features: {args.max_features}")
+                    print(f"  - bootstrap: {args.bootstrap}")
+                    print(f"  - oob_score: {args.oob_score}")
+                    print(f"  - class_balance: {args.enbalance}")
+                    
+                    # Determine class weight
+                    class_weight_val = 'balanced' if bool_from_str(args.enbalance) else None
+                    
+                    # Parse max_features
+                    max_features_parsed = parse_max_features(args.max_features, X.shape[1])
+                    
+                    # Create Random Forest model
+                    rf_model = RandomForestClassifier(
+                        n_estimators=int(args.n_estimators),
+                        max_depth=None if int(args.max_depth) <= 0 else int(args.max_depth),
+                        min_samples_split=int(args.min_samples_split),
+                        min_samples_leaf=int(args.min_samples_leaf),
+                        max_features=max_features_parsed,
+                        bootstrap=bool_from_str(args.bootstrap),
+                        oob_score=bool_from_str(args.oob_score),
+                        class_weight=class_weight_val,
+                        random_state=int(args.random_state),
+                        n_jobs=-1  # Use all available cores
+                    )
+                    
+                    clf = rf_model
+                    model_config["params"] = {
+                        "n_estimators": int(args.n_estimators),
+                        "max_depth": None if int(args.max_depth) <= 0 else int(args.max_depth),
+                        "min_samples_split": int(args.min_samples_split),
+                        "min_samples_leaf": int(args.min_samples_leaf),
+                        "max_features": max_features_parsed,
+                        "bootstrap": bool_from_str(args.bootstrap),
+                        "oob_score": bool_from_str(args.oob_score),
+                        "class_weight": class_weight_val
+                    }
+
+                else:
+                    raise ValueError(f"For classification, only 'logistic' or 'random_forest' models are supported. Got: {model_name}")
+
+                # Compute sample weights for imbalance if requested and not using class_weight
                 sample_weight = None
-                if bool_from_str(args.enbalance):
+                if bool_from_str(args.enbalance) and model_name != "random_forest":
                     print("[INFO] Computing sample weights for imbalance")
                     try:
                         sample_weight = compute_sample_weight(class_weight='balanced', y=y_prepared)
                     except Exception as e:
                         print(f"[WARN] Could not compute sample weights: {e}")
 
-                print(f"[INFO] Training Logistic Regression")
-                print(f"  - solver: {args.solver}")
-                print(f"  - C: {args.C_value}")
-                print(f"  - regularization: {args.regularization}")
-                print(f"  - fit_intercept: {args.fit_intercept}")
-                print(f"  - max_iter: {args.max_iter}")
-                print(f"  - use_scaler: {args.use_scaler}")
-                print(f"  - class_balance: {args.enbalance}")
-                
-                # Determine class weight
-                class_weight_val = 'balanced' if bool_from_str(args.enbalance) else None
-                
-                # Handle regularization
-                penalty_map = {
-                    'none': None,
-                    'l1': 'l1',
-                    'l2': 'l2',
-                    'elasticnet': 'elasticnet'
-                }
-                penalty = penalty_map.get(args.regularization, None)
-                
-                # Adjust solver based on penalty
-                solver = args.solver
-                if penalty == 'l1':
-                    if solver not in ['liblinear', 'saga']:
-                        solver = 'liblinear'
-                        print(f"[INFO] Changed solver to {solver} for L1 regularization")
-                elif penalty == 'elasticnet':
-                    if solver != 'saga':
-                        solver = 'saga'
-                        print(f"[INFO] Changed solver to {solver} for elasticnet regularization")
-                
-                # Create logistic regression model
-                lr_model = LogisticRegression(
-                    penalty=penalty,
-                    C=float(args.C_value),
-                    fit_intercept=bool_from_str(args.fit_intercept),
-                    class_weight=class_weight_val,
-                    solver=solver,
-                    max_iter=int(args.max_iter),
-                    random_state=int(args.random_state)
-                )
-                
-                # Scale if requested
-                if bool_from_str(args.use_scaler):
-                    clf = Pipeline([('scaler', StandardScaler()), ('est', lr_model)])
-                else:
-                    clf = lr_model
-                    
-                model_config["params"] = {
-                    "solver": solver,
-                    "C": float(args.C_value),
-                    "penalty": penalty,
-                    "fit_intercept": bool_from_str(args.fit_intercept),
-                    "max_iter": int(args.max_iter),
-                    "class_weight": class_weight_val,
-                    "use_scaler": bool_from_str(args.use_scaler)
-                }
-
                 # cross-validation
                 try:
-                    cv_scores = cross_val_score(clf, X, y_prepared, cv=5, scoring='accuracy')
-                    metrics["cv_accuracy_mean"] = float(cv_scores.mean())
-                    metrics["cv_accuracy_std"] = float(cv_scores.std())
-                    print(f"[INFO] CV Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+                    cv_scoring = 'accuracy' if model_name == 'logistic' else 'roc_auc_ovr' if y_prepared.nunique() > 2 else 'roc_auc'
+                    cv_scores = cross_val_score(clf, X, y_prepared, cv=5, scoring=cv_scoring)
+                    metrics[f"cv_{cv_scoring}_mean"] = float(cv_scores.mean())
+                    metrics[f"cv_{cv_scoring}_std"] = float(cv_scores.std())
+                    print(f"[INFO] CV {cv_scoring}: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
                 except Exception as e:
                     print(f"[WARN] CV failed: {e}")
 
                 # fit model
                 try:
-                    if sample_weight is not None:
+                    if sample_weight is not None and model_name == "logistic":
                         clf.fit(X, y_prepared, sample_weight=sample_weight)
                     else:
                         clf.fit(X, y_prepared)
@@ -300,14 +392,26 @@ implementation:
                         metrics["log_loss_train"] = float(log_loss(y_prepared, y_pred_proba))
                     except Exception:
                         pass
+                
+                # Add ROC AUC for binary and multiclass
+                if y_pred_proba is not None:
+                    try:
+                        if y_prepared.nunique() == 2:
+                            metrics["roc_auc_train"] = float(roc_auc_score(y_prepared, y_pred_proba[:, 1]))
+                        else:
+                            metrics["roc_auc_ovr_train"] = float(roc_auc_score(y_prepared, y_pred_proba, multi_class='ovr', average='weighted'))
+                    except Exception:
+                        pass
+                
+                # Add OOB score for random forest if available
+                if model_name == "random_forest" and bool_from_str(args.oob_score) and hasattr(clf, "oob_score_"):
+                    metrics["oob_score"] = float(clf.oob_score_)
+                    print(f"[INFO] OOB Score: {clf.oob_score_:.4f}")
 
                 model_obj = clf
 
             elif task == "regression":
                 print("[INFO] Regression task detected")
-                
-                if model_name not in ["linear", "polynomial"]:
-                    raise ValueError(f"For regression, only 'linear' or 'polynomial' models are supported. Got: {model_name}")
                 
                 y_num = pd.to_numeric(y, errors="coerce")
                 valid_mask = y_num.notna()
@@ -407,6 +511,46 @@ implementation:
                         "use_scaler": bool_from_str(args.use_scaler)
                     }
 
+                elif model_name == "random_forest":
+                    print(f"[INFO] Training Random Forest Regressor")
+                    print(f"  - n_estimators: {args.n_estimators}")
+                    print(f"  - max_depth: {args.max_depth} (0 = unlimited)")
+                    print(f"  - min_samples_split: {args.min_samples_split}")
+                    print(f"  - min_samples_leaf: {args.min_samples_leaf}")
+                    print(f"  - max_features: {args.max_features}")
+                    print(f"  - bootstrap: {args.bootstrap}")
+                    print(f"  - oob_score: {args.oob_score}")
+                    
+                    # Parse max_features
+                    max_features_parsed = parse_max_features(args.max_features, X.shape[1])
+                    
+                    # Create Random Forest model
+                    rf_model = RandomForestRegressor(
+                        n_estimators=int(args.n_estimators),
+                        max_depth=None if int(args.max_depth) <= 0 else int(args.max_depth),
+                        min_samples_split=int(args.min_samples_split),
+                        min_samples_leaf=int(args.min_samples_leaf),
+                        max_features=max_features_parsed,
+                        bootstrap=bool_from_str(args.bootstrap),
+                        oob_score=bool_from_str(args.oob_score),
+                        random_state=int(args.random_state),
+                        n_jobs=-1  # Use all available cores
+                    )
+                    
+                    reg = rf_model
+                    model_config["params"] = {
+                        "n_estimators": int(args.n_estimators),
+                        "max_depth": None if int(args.max_depth) <= 0 else int(args.max_depth),
+                        "min_samples_split": int(args.min_samples_split),
+                        "min_samples_leaf": int(args.min_samples_leaf),
+                        "max_features": max_features_parsed,
+                        "bootstrap": bool_from_str(args.bootstrap),
+                        "oob_score": bool_from_str(args.oob_score)
+                    }
+
+                else:
+                    raise ValueError(f"For regression, only 'linear', 'polynomial' or 'random_forest' models are supported. Got: {model_name}")
+
                 # cross-validation
                 try:
                     cv_scores = cross_val_score(reg, X, y_num, cv=5, scoring='r2')
@@ -447,6 +591,11 @@ implementation:
                                 print(f"[INFO] Polynomial features transformed: {n_features_in} -> {n_features_out}")
                     except Exception:
                         pass
+                
+                # Add OOB score for random forest if available
+                if model_name == "random_forest" and bool_from_str(args.oob_score) and hasattr(reg, "oob_score_"):
+                    metrics["oob_score"] = float(reg.oob_score_)
+                    print(f"[INFO] OOB Score: {reg.oob_score_:.4f}")
 
                 model_obj = reg
 
@@ -456,6 +605,31 @@ implementation:
             # finalize model_config
             model_config["trained_samples"] = int(len(X))
             model_config["trained_features"] = int(X.shape[1])
+            
+            # Add feature importance for random forest
+            if model_name == "random_forest":
+                try:
+                    if task == "classification":
+                        feature_importances = model_obj.feature_importances_
+                    else:
+                        feature_importances = model_obj.feature_importances_
+                    
+                    # Create feature importance dictionary
+                    if isinstance(X, pd.DataFrame):
+                        feature_names = X.columns.tolist()
+                    else:
+                        feature_names = [f"feature_{i}" for i in range(X.shape[1])]
+                    
+                    importance_dict = {}
+                    for name, importance in zip(feature_names, feature_importances):
+                        importance_dict[name] = float(importance)
+                    
+                    # Sort by importance
+                    sorted_importance = dict(sorted(importance_dict.items(), key=lambda x: x[1], reverse=True))
+                    metrics["top_5_features"] = list(sorted_importance.items())[:5]
+                    
+                except Exception as e:
+                    print(f"[WARN] Could not extract feature importance: {e}")
 
             # save model, metrics and config
             ensure_dir_for(args.model_pickle)
@@ -514,6 +688,20 @@ implementation:
       - {inputValue: max_iter}
       - --random_state
       - {inputValue: random_state}
+      - --n_estimators
+      - {inputValue: n_estimators}
+      - --max_depth
+      - {inputValue: max_depth}
+      - --min_samples_split
+      - {inputValue: min_samples_split}
+      - --min_samples_leaf
+      - {inputValue: min_samples_leaf}
+      - --max_features
+      - {inputValue: max_features}
+      - --bootstrap
+      - {inputValue: bootstrap}
+      - --oob_score
+      - {inputValue: oob_score}
       - --model_pickle
       - {outputPath: model_pickle}
       - --metrics_json
