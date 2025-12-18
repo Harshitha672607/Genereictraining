@@ -128,12 +128,25 @@ implementation:
                 print("Class distribution percentages:")
                 print((y.value_counts(dropna=False, normalize=True) * 100).round(2).to_string())
             else:
-                print("Regression task - target statistics:")
-                print(f"Min: {y.min():.4f}")
-                print(f"Max: {y.max():.4f}")
-                print(f"Mean: {y.mean():.4f}")
-                print(f"Std: {y.std():.4f}")
-                print(f"Missing values: {y.isna().sum()}")
+                # For regression, convert to numeric first before printing statistics
+                print("Regression task - attempting to convert target to numeric...")
+                y_numeric_check = pd.to_numeric(y, errors="coerce")
+                valid_numeric = y_numeric_check.notna()
+                
+                if valid_numeric.sum() == 0:
+                    raise ValueError("Target variable contains no valid numeric values for regression task")
+                
+                if not valid_numeric.all():
+                    print(f"[WARN] Found {(~valid_numeric).sum()} non-numeric values in target")
+                    print(f"[WARN] Sample of non-numeric values: {y[~valid_numeric].head().tolist()}")
+                
+                print("Target statistics (numeric values only):")
+                print(f"Min: {y_numeric_check[valid_numeric].min():.4f}")
+                print(f"Max: {y_numeric_check[valid_numeric].max():.4f}")
+                print(f"Mean: {y_numeric_check[valid_numeric].mean():.4f}")
+                print(f"Std: {y_numeric_check[valid_numeric].std():.4f}")
+                print(f"Valid numeric values: {valid_numeric.sum()}")
+                print(f"Missing/invalid values: {(~valid_numeric).sum()}")
 
             metrics = {"task": task, "samples": int(len(y)), "features": int(X.shape[1])}
             model_name = args.model_name.strip().lower()
