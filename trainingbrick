@@ -1,4 +1,4 @@
-name: model training 18271
+name: model training 182712
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
@@ -80,24 +80,66 @@ implementation:
             elif max_features_str == "log2":
                 return "log2"
             elif max_features_str.endswith("%"):
-                # Percentage
                 try:
                     percentage = float(max_features_str[:-1]) / 100.0
                     return max(1, int(n_features * percentage))
                 except:
                     return "sqrt"
             else:
-                # Try to parse as integer
                 try:
                     val = int(max_features_str)
                     return max(1, min(val, n_features))
                 except:
-                    # Try to parse as float
                     try:
                         val = float(max_features_str)
                         return max(1, int(n_features * val))
                     except:
                         return "sqrt"
+
+        def determine_task(y, user_specified_task, model_name):
+            """
+            Determine whether this is classification or regression.
+            Priority: user specification > model name > data analysis
+            """
+            user_task = str(user_specified_task).strip().lower()
+            
+            # If user explicitly specified task, use that
+            if user_task in ["classification", "regression"]:
+                print(f"[INFO] Using user-specified task: {user_task}")
+                return user_task
+            
+            # If model is logistic, force classification (even if data looks numeric)
+            if model_name == "logistic":
+                print(f"[INFO] Model 'logistic' detected, forcing classification task")
+                return "classification"
+            
+            # If model is linear, polynomial, or random_forest, need to analyze data
+            # First try to detect if this is classification data
+            y_series = pd.Series(y).astype(str).str.strip()
+            unique_values = y_series.nunique()
+            
+            # If few unique values, could be classification
+            if unique_values <= 10:
+                # Check if values look like classes (strings or integers)
+                try:
+                    # Try to convert to numeric and see if they're integers
+                    y_numeric = pd.to_numeric(y_series, errors='coerce')
+                    if y_numeric.notna().all():
+                        # All values are numeric
+                        if y_numeric.apply(float.is_integer).all() and unique_values <= 10:
+                            print(f"[INFO] Detected classification (integer classes: {sorted(y_numeric.unique().tolist())})")
+                            return "classification"
+                except:
+                    pass
+                
+                # Check for string categories
+                if unique_values <= 10:
+                    print(f"[INFO] Detected classification (unique string values: {sorted(y_series.unique().tolist())})")
+                    return "classification"
+            
+            # Default to regression
+            print(f"[INFO] Detected regression (continuous target)")
+            return "regression"
 
         ap = argparse.ArgumentParser()
         ap.add_argument('--X_data', type=str, required=True)
@@ -162,17 +204,22 @@ implementation:
                     X = X.reset_index(drop=True).iloc[:m, :].copy()
                     y = y.reset_index(drop=True).iloc[:m].copy()
 
-            print("===== TARGET VARIABLE INFO =====")
-            task = args.model_type.strip().lower()
+            # Determine task based on combination of user input and data
+            model_name = args.model_name.strip().lower()
+            task = determine_task(y, args.model_type, model_name)
             
+            print("===== TARGET VARIABLE INFO =====")
             if task == "classification":
                 print("Classification task - target distribution:")
                 print(y.value_counts(dropna=False).to_string())
-                print(f"Unique classes: {y.nunique()}")
-                print("Class distribution percentages:")
+                print(f"Unique values: {y.nunique()}")
+                print("Distribution percentages:")
                 print((y.value_counts(dropna=False, normalize=True) * 100).round(2).to_string())
+                
+                # For classification with numeric target that should be classes (like 0/1)
+                if pd.api.types.is_numeric_dtype(y):
+                    print(f"[INFO] Numeric target for classification - unique values: {sorted(y.unique().tolist())}")
             else:
-                # For regression, convert to numeric first before printing statistics
                 print("Regression task - converting target to numeric...")
                 y_numeric_check = pd.to_numeric(y, errors="coerce")
                 valid_numeric = y_numeric_check.notna()
@@ -187,7 +234,6 @@ implementation:
                     print(f"[WARN] Found {invalid_count} non-numeric values in target")
                     print(f"[WARN] Sample of non-numeric values: {y[~valid_numeric].head(5).tolist()}")
                 
-                # Calculate statistics safely
                 y_valid = y_numeric_check[valid_numeric]
                 min_val = float(y_valid.min())
                 max_val = float(y_valid.max())
@@ -203,7 +249,6 @@ implementation:
                 print(f"Missing/invalid values: {int((~valid_numeric).sum())}")
 
             metrics = {"task": task, "samples": int(len(y)), "features": int(X.shape[1])}
-            model_name = args.model_name.strip().lower()
             model_obj = None
 
             # prepare model config skeleton
@@ -215,19 +260,45 @@ implementation:
             }
 
             if task == "classification":
-                print("[INFO] Classification task detected")
+                print(f"[INFO] Classification task with model: {model_name}")
                 
                 # Prepare target for classification
                 meta = try_load_metadata(args.preprocess_metadata)
                 label_mapping = meta.get("label_mapping") if meta else None
 
+                # Convert target to appropriate format
+                y_series = pd.Series(y).astype(str).str.strip()
+                
+                # Try to preserve original values if they look like integers
                 try:
-                    y_prepared = pd.Series(y).astype(int)
-                    map_info = {"mode": "already_encoded", "label_mapping_reference": label_mapping}
-                except Exception:
+                    y_int = pd.to_numeric(y_series, errors='coerce')
+                    if y_int.notna().all() and y_int.apply(float.is_integer).all():
+                        y_prepared = y_int.astype(int)
+                        map_info = {
+                            "mode": "integer_classes", 
+                            "classes": sorted(y_prepared.unique().tolist()),
+                            "label_mapping_reference": label_mapping
+                        }
+                        print(f"[INFO] Using integer classes: {sorted(y_prepared.unique().tolist())}")
+                    else:
+                        # Use label encoder for string classes
+                        le = LabelEncoder()
+                        y_prepared = pd.Series(le.fit_transform(y_series), index=y.index)
+                        map_info = {
+                            "mode": "label_encoder", 
+                            "classes": le.classes_.tolist(),
+                            "mapping": dict(zip(le.classes_, le.transform(le.classes_)))
+                        }
+                        print(f"[INFO] Encoded classes: {dict(zip(le.classes_, le.transform(le.classes_)))}")
+                except Exception as e:
+                    print(f"[WARN] Error in class encoding: {e}")
+                    # Fallback to label encoder
                     le = LabelEncoder()
-                    y_prepared = pd.Series(le.fit_transform(y.astype(str)), index=y.index)
-                    map_info = {"mode": "label_encoder_fallback", "classes": le.classes_.tolist()}
+                    y_prepared = pd.Series(le.fit_transform(y_series), index=y.index)
+                    map_info = {
+                        "mode": "label_encoder_fallback", 
+                        "classes": le.classes_.tolist()
+                    }
 
                 valid_mask = y_prepared.notna()
                 if not valid_mask.all():
@@ -324,7 +395,7 @@ implementation:
                         oob_score=bool_from_str(args.oob_score),
                         class_weight=class_weight_val,
                         random_state=int(args.random_state),
-                        n_jobs=-1  # Use all available cores
+                        n_jobs=-1
                     )
                     
                     clf = rf_model
@@ -410,7 +481,7 @@ implementation:
                 model_obj = clf
 
             elif task == "regression":
-                print("[INFO] Regression task detected")
+                print(f"[INFO] Regression task with model: {model_name}")
                 
                 y_num = pd.to_numeric(y, errors="coerce")
                 valid_mask = y_num.notna()
@@ -533,7 +604,7 @@ implementation:
                         bootstrap=bool_from_str(args.bootstrap),
                         oob_score=bool_from_str(args.oob_score),
                         random_state=int(args.random_state),
-                        n_jobs=-1  # Use all available cores
+                        n_jobs=-1
                     )
                     
                     reg = rf_model
@@ -579,7 +650,6 @@ implementation:
                 # Add polynomial-specific info
                 if model_name == "polynomial":
                     try:
-                        # Get feature names after polynomial transformation
                         if hasattr(reg, 'named_steps'):
                             poly_step = reg.named_steps.get('poly')
                             if poly_step:
@@ -599,7 +669,7 @@ implementation:
                 model_obj = reg
 
             else:
-                raise ValueError(f"Unsupported model_type '{args.model_type}'. Must be 'classification' or 'regression'.")
+                raise ValueError(f"Unsupported task '{task}'. Must be 'classification' or 'regression'.")
 
             # finalize model_config
             model_config["trained_samples"] = int(len(X))
@@ -668,42 +738,4 @@ implementation:
       - --target_column
       - {inputValue: target_column}
       - --preprocess_metadata
-      - {inputPath: preprocess_metadata}
-      - --model_name
-      - {inputValue: model_name}
-      - --use_scaler
-      - {inputValue: use_scaler}
-      - --fit_intercept
-      - {inputValue: fit_intercept}
-      - --regularization
-      - {inputValue: regularization}
-      - --C_value
-      - {inputValue: C_value}
-      - --poly_degree
-      - {inputValue: poly_degree}
-      - --solver
-      - {inputValue: solver}
-      - --max_iter
-      - {inputValue: max_iter}
-      - --random_state
-      - {inputValue: random_state}
-      - --n_estimators
-      - {inputValue: n_estimators}
-      - --max_depth
-      - {inputValue: max_depth}
-      - --min_samples_split
-      - {inputValue: min_samples_split}
-      - --min_samples_leaf
-      - {inputValue: min_samples_leaf}
-      - --max_features
-      - {inputValue: max_features}
-      - --bootstrap
-      - {inputValue: bootstrap}
-      - --oob_score
-      - {inputValue: oob_score}
-      - --model_pickle
-      - {outputPath: model_pickle}
-      - --metrics_json
-      - {outputPath: metrics_json}
-      - --model_config
-      - {outputPath: model_config}
+      - {inputPath: preprocess_
