@@ -1,4 +1,4 @@
-name: model training 1827
+name: model training 18271
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
