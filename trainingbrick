@@ -1,4 +1,4 @@
-name: model training v1
+name: model training v11
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
@@ -97,10 +97,6 @@ implementation:
                         return "sqrt"
 
         def determine_task(y, user_specified_task, model_name):
-            """
-            Determine whether this is classification or regression.
-            Priority: user specification > model name > data analysis
-            """
             user_task = str(user_specified_task).strip().lower()
             
             # If user explicitly specified task, use that
