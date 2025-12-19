@@ -1,4 +1,4 @@
-name: model training 182712
+name: model training v1
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
@@ -738,4 +738,42 @@ implementation:
       - --target_column
       - {inputValue: target_column}
       - --preprocess_metadata
-      - {inputPath: preprocess_
+      - {inputPath: preprocess_metadata}
+      - --model_name
+      - {inputValue: model_name}
+      - --use_scaler
+      - {inputValue: use_scaler}
+      - --fit_intercept
+      - {inputValue: fit_intercept}
+      - --regularization
+      - {inputValue: regularization}
+      - --C_value
+      - {inputValue: C_value}
+      - --poly_degree
+      - {inputValue: poly_degree}
+      - --solver
+      - {inputValue: solver}
+      - --max_iter
+      - {inputValue: max_iter}
+      - --random_state
+      - {inputValue: random_state}
+      - --n_estimators
+      - {inputValue: n_estimators}
+      - --max_depth
+      - {inputValue: max_depth}
+      - --min_samples_split
+      - {inputValue: min_samples_split}
+      - --min_samples_leaf
+      - {inputValue: min_samples_leaf}
+      - --max_features
+      - {inputValue: max_features}
+      - --bootstrap
+      - {inputValue: bootstrap}
+      - --oob_score
+      - {inputValue: oob_score}
+      - --model_pickle
+      - {outputPath: model_pickle}
+      - --metrics_json
+      - {outputPath: metrics_json}
+      - --model_config
+      - {outputPath: model_config}
