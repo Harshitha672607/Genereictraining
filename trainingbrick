@@ -71,7 +71,6 @@ implementation:
                 return None
 
         def parse_max_features(max_features_str, n_features):
-            """Parse max_features parameter for random forest"""
             max_features_str = str(max_features_str).strip().lower()
             
             if max_features_str == "auto":
