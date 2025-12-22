@@ -1,4 +1,4 @@
-name: model training v2098
+name: model training v10
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
@@ -55,7 +55,7 @@ implementation:
             return str(s).strip().lower() in ("1","true","t","yes","y")
 
         def load_parquet_df(path):
-            return pd.read_parquet(path, engine="auto")
+            return pd.read_csv(path)
 
         def try_load_metadata(path):
             if not path or not os.path.exists(path):
