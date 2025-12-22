@@ -1,4 +1,4 @@
-name: model training v11
+name: model training v2098
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
   - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
@@ -24,7 +24,7 @@ inputs:
   - {name: oob_score, type: String, description: "Whether to calculate out-of-bag score (random forest)", optional: true, default: "false"}
 
 outputs:
-  - {name: model_pickle, type: Data, description: "Pickled trained model (.pkl)"}
+  - {name: model_pickle, type: Model, description: "Pickled trained model (.pkl)"}
   - {name: metrics_json, type: Data, description: "Training metrics JSON"}
   - {name: model_config, type: Data, description: "Model configuration JSON (hyperparameters & metadata)"}
 
