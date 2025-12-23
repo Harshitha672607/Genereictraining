@@ -21,15 +21,15 @@ inputs:
   - {name: use_scaler, type: String, optional: true, default: "true"}
   - {name: fit_intercept, type: String, optional: true, default: "true"}
   - {name: regularization, type: String, optional: true, default: "none"}
-  - {name: C_value, type: Float, optional: true, default: 1.0}
-  - {name: poly_degree, type: Integer, optional: true, default: 2}
+  - {name: C_value, type: Float, optional: true, default: "1.0"}
+  - {name: poly_degree, type: Integer, optional: true, default: "2"}
   - {name: solver, type: String, optional: true, default: "lbfgs"}
-  - {name: random_state, type: Integer, optional: true, default: 48}
-  - {name: max_iter, type: Integer, optional: true, default: 100}
-  - {name: n_estimators, type: Integer, optional: true, default: 100}
-  - {name: max_depth, type: Integer, optional: true, default: 0}
-  - {name: min_samples_split, type: Integer, optional: true, default: 1}
-  - {name: min_samples_leaf, type: Integer, optional: true, default: 1}
+  - {name: random_state, type: Integer, optional: true, default: "48"}
+  - {name: max_iter, type: Integer, optional: true, default: "100"}
+  - {name: n_estimators, type: Integer, optional: true, default: "100"}
+  - {name: max_depth, type: Integer, optional: true, default: "0"}
+  - {name: min_samples_split, type: Integer, optional: true, default: "1"}
+  - {name: min_samples_leaf, type: Integer, optional: true, default: "1"}
   - {name: max_features, type: String, optional: true, default: "auto"}
   - {name: bootstrap, type: String, optional: true, default: "true"}
   - {name: oob_score, type: String, optional: true, default: "false"}
