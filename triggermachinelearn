@@ -1,4 +1,4 @@
-name: ML Pipeline Trigger 6
+name: ML Pipeline Trigger 27
 inputs:
   - {name: bearer_token, type: string, description: "Path to file containing bearer token"}
   - {name: domain, type: String, description: "Base domain, e.g. https://ig.gov-cloud.ai"}
@@ -16,6 +16,8 @@ inputs:
   - {name: model_id, type: String, optional: true, default: ""}
   - {name: project_id, type: String, optional: true, default: ""}
   - {name: execution_id, type: Integer, optional: true}
+  # NEW INPUT ADDED HERE - This will receive cleaning_metadata_cdn_url from Upload to CDN v6
+  - {name: cleaning_metadata_cdn, type: String, optional: true, default: ""}
   # New parameters
   - {name: enbalance, type: String, optional: true, default: "true"}
   - {name: use_scaler, type: String, optional: true, default: "true"}
@@ -69,6 +71,8 @@ implementation:
         parser.add_argument('--model_id', default="")
         parser.add_argument('--project_id', default="")
         parser.add_argument('--execution_id', type=int)
+        # NEW ARGUMENT ADDED HERE
+        parser.add_argument('--cleaning_metadata_cdn', default="")
         # New arguments
         parser.add_argument('--enbalance', default="true")
         parser.add_argument('--use_scaler', default="true")
@@ -128,6 +132,9 @@ implementation:
             parameters["project_id"] = args.project_id
         if args.execution_id != 0:
             parameters["execution_id"] = args.execution_id
+        # NEW PARAMETER ADDED HERE
+        if args.cleaning_metadata_cdn:
+            parameters["cleaning_metadata_cdn"] = args.cleaning_metadata_cdn
         
         # Add new parameters
         if args.enbalance:
@@ -258,6 +265,9 @@ implementation:
       - {inputValue: project_id}
       - --execution_id
       - {inputValue: execution_id}
+      # NEW ARGUMENT MAPPING ADDED HERE
+      - --cleaning_metadata_cdn
+      - {inputValue: cleaning_metadata_cdn}
       # New arguments mapping
       - --enbalance
       - {inputValue: enbalance}
