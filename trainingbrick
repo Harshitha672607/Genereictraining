@@ -1,36 +1,36 @@
-name: model training v11.0
+name: model training v12
 inputs:
   - {name: X_data, type: Dataset, description: "Parquet or CSV file for features (DataFrame)"}
-  - {name: y_data, type: Dataset, description: "Parquet or CSV file for target (Series or single-column DataFrame) - already encoded"}
+  - {name: y_data, type: Dataset, description: "Parquet or CSV file for target (Series or single-column DataFrame)"}
   - {name: model_type, type: String, description: "classification or regression", optional: true, default: "classification"}
-  - {name: enbalance, type: String, description: "true/false for class imbalance handling (classification only)", optional: true, default: "true"}
-  - {name: target_column, type: String, description: "Optional. Column name inside y parquet if it has multiple columns", optional: true, default: ""}
-  - {name: preprocess_metadata, type: Data, description: "Optional metadata from preprocessing (for reference)", optional: true}
-  - {name: model_name, type: String, description: "Model to train: linear | logistic | polynomial | random_forest", optional: true, default: "logistic"}
-  - {name: use_scaler, type: String, description: "true/false. If true, apply StandardScaler (recommended for linear models)", optional: true, default: "true"}
-  - {name: fit_intercept, type: String, description: "Whether to calculate intercept for linear/logistic regression", optional: true, default: "true"}
-  - {name: regularization, type: String, description: "Regularization type: none | l1 | l2 | elasticnet", optional: true, default: "none"}
-  - {name: C_value, type: Float, description: "Inverse of regularization strength (smaller values = stronger regularization)", optional: true, default: "1.0"}
-  - {name: poly_degree, type: Integer, description: "Degree for polynomial features (for polynomial regression only)", optional: true, default: "2"}
-  - {name: solver, type: String, description: "Solver for logistic regression: lbfgs | liblinear | newton-cg | sag | saga", optional: true, default: "lbfgs"}
-  - {name: max_iter, type: Integer, description: "Maximum iterations for optimization", optional: true, default: "100"}
-  - {name: random_state, type: Integer, description: "Random seed for reproducibility", optional: true, default: "48"}
-  - {name: n_estimators, type: Integer, description: "Number of trees in random forest", optional: true, default: "100"}
-  - {name: max_depth, type: Integer, description: "Maximum depth of trees in random forest (0 for unlimited)", optional: true, default: "0"}
-  - {name: min_samples_split, type: Integer, description: "Minimum samples required to split a node", optional: true, default: "2"}
-  - {name: min_samples_leaf, type: Integer, description: "Minimum samples required at a leaf node", optional: true, default: "1"}
-  - {name: max_features, type: String, description: "Number of features to consider for best split: auto | sqrt | log2 | number or percentage", optional: true, default: "auto"}
-  - {name: bootstrap, type: String, description: "Whether to use bootstrap samples when building trees", optional: true, default: "true"}
-  - {name: oob_score, type: String, description: "Whether to calculate out-of-bag score (random forest)", optional: true, default: "false"}
+  - {name: enbalance, type: String, description: "true/false for class imbalance handling", optional: true, default: "true"}
+  - {name: target_column, type: String, description: "Column name inside y data if multiple columns", optional: true, default: ""}
+  - {name: preprocess_metadata, type: Data, description: "Optional metadata", optional: true}
+  - {name: model_name, type: String, description: "linear | logistic | polynomial | random_forest", optional: true, default: "logistic"}
+  - {name: use_scaler, type: String, description: "true/false", optional: true, default: "true"}
+  - {name: fit_intercept, type: String, description: "true/false", optional: true, default: "true"}
+  - {name: regularization, type: String, description: "none | l1 | l2 | elasticnet", optional: true, default: "none"}
+  - {name: C_value, type: Float, description: "Regularization strength", optional: true, default: "1.0"}
+  - {name: poly_degree, type: Integer, description: "Degree for polynomial", optional: true, default: "2"}
+  - {name: solver, type: String, description: "lbfgs | liblinear | newton-cg | sag | saga", optional: true, default: "lbfgs"}
+  - {name: max_iter, type: Integer, description: "Maximum iterations", optional: true, default: "100"}
+  - {name: random_state, type: Integer, description: "Random seed", optional: true, default: "48"}
+  - {name: n_estimators, type: Integer, description: "Number of trees", optional: true, default: "100"}
+  - {name: max_depth, type: Integer, description: "Max tree depth (0=unlimited)", optional: true, default: "0"}
+  - {name: min_samples_split, type: Integer, description: "Min samples to split", optional: true, default: "2"}
+  - {name: min_samples_leaf, type: Integer, description: "Min samples at leaf", optional: true, default: "1"}
+  - {name: max_features, type: String, description: "Features for split", optional: true, default: "auto"}
+  - {name: bootstrap, type: String, description: "true/false", optional: true, default: "true"}
+  - {name: oob_score, type: String, description: "true/false", optional: true, default: "false"}
 
 outputs:
-  - {name: model_pickle, type: Model, description: "Pickled trained model (.pkl)"}
+  - {name: model_pickle, type: Model, description: "Trained model (.pkl)"}
   - {name: metrics_json, type: Data, description: "Training metrics JSON"}
-  - {name: model_config, type: Data, description: "Model configuration JSON (hyperparameters & metadata)"}
+  - {name: model_config, type: Data, description: "Model configuration JSON"}
 
 implementation:
   container:
-    image: gurpreetgandhi/nesy-factory:vtest4
+    image: gurpreetgandhi/nesy-factory:vtest4  # NEEDS TO BE UPDATED
     command:
       - python3
       - -u
@@ -55,90 +55,38 @@ implementation:
             return str(s).strip().lower() in ("1","true","t","yes","y")
 
         def load_data_file(path):
+            """Load DataFrame from either Parquet or CSV file."""
             print(f"[INFO] Loading data file: {path}")
             
-            # Check if file exists
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Data file not found: {path}")
             
-            # Get file size for logging
             file_size = os.path.getsize(path)
             print(f"[INFO] File size: {file_size} bytes")
             
-            # Try to determine file type by extension
-            file_ext = os.path.splitext(path)[1].lower()
-            
+            # Try Parquet first
             try:
-                if file_ext == '.parquet':
-                    print("[INFO] Loading as Parquet file")
-                    df = pd.read_parquet(path)
-                    print(f"[INFO] Successfully loaded Parquet: {df.shape}")
-                    return df
-                
-                elif file_ext == '.csv':
-                    print("[INFO] Loading as CSV file")
-                    # Try multiple encodings for CSV
-                    encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252', 'utf-16']
-                    last_error = None
-                    
-                    for encoding in encodings:
-                        try:
-                            df = pd.read_csv(path, encoding=encoding, on_bad_lines='warn')
-                            print(f"[INFO] Successfully loaded CSV with {encoding} encoding: {df.shape}")
-                            return df
-                        except UnicodeDecodeError as e:
-                            last_error = e
-                            print(f"[DEBUG] Failed with encoding {encoding}: {e}")
-                            continue
-                        except Exception as e:
-                            last_error = e
-                            print(f"[DEBUG] Failed with encoding {encoding}: {e}")
-                            continue
-                    
-                    # If all encodings fail, try without specifying encoding
+                df = pd.read_parquet(path)
+                print(f"[INFO] Successfully loaded as Parquet: {df.shape}")
+                return df
+            except:
+                # Try CSV with multiple encodings
+                encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
+                for encoding in encodings:
                     try:
-                        df = pd.read_csv(path, encoding=None, engine='python', on_bad_lines='warn')
-                        print(f"[INFO] Successfully loaded CSV with default encoding: {df.shape}")
+                        df = pd.read_csv(path, encoding=encoding, on_bad_lines='warn')
+                        print(f"[INFO] Successfully loaded as CSV with {encoding}: {df.shape}")
                         return df
-                    except Exception as e:
-                        raise ValueError(f"Failed to read CSV file with any encoding. Last error: {last_error}")
+                    except:
+                        continue
                 
-                else:
-                    # For unknown extensions, try both formats
-                    print(f"[INFO] Unknown file extension '{file_ext}', trying auto-detection")
-                    
-                    # First try as Parquet
-                    try:
-                        df = pd.read_parquet(path)
-                        print(f"[INFO] Auto-detected as Parquet: {df.shape}")
-                        return df
-                    except Exception as e1:
-                        print(f"[DEBUG] Not a Parquet file: {e1}")
-                        
-                        # Try as CSV with multiple encodings
-                        encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
-                        for encoding in encodings:
-                            try:
-                                df = pd.read_csv(path, encoding=encoding, on_bad_lines='warn')
-                                print(f"[INFO] Auto-detected as CSV with {encoding} encoding: {df.shape}")
-                                return df
-                            except Exception as e2:
-                                print(f"[DEBUG] Failed as CSV with {encoding}: {e2}")
-                                continue
-                        
-                        raise ValueError(f"Cannot determine file format for {path}. Tried Parquet and CSV formats.")
-                        
-            except Exception as e:
-                print(f"[ERROR] Failed to load file {path}: {str(e)}")
-                # Try to read first few bytes to diagnose
+                # Try without encoding
                 try:
-                    with open(path, 'rb') as f:
-                        first_bytes = f.read(100)
-                        print(f"[DEBUG] First 100 bytes (hex): {first_bytes.hex()}")
-                        print(f"[DEBUG] First 100 bytes (ascii): {first_bytes[:50]}")
-                except:
-                    pass
-                raise
+                    df = pd.read_csv(path, encoding=None, engine='python', on_bad_lines='warn')
+                    print(f"[INFO] Successfully loaded as CSV with default encoding: {df.shape}")
+                    return df
+                except Exception as e:
+                    raise ValueError(f"Cannot read file {path}: {e}")
 
         def try_load_metadata(path):
             if not path or not os.path.exists(path):
@@ -146,11 +94,7 @@ implementation:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
-            try:
-                return joblib.load(path)
-            except Exception:
+            except:
                 return None
 
         def parse_max_features(max_features_str, n_features):
@@ -182,41 +126,31 @@ implementation:
         def determine_task(y, user_specified_task, model_name):
             user_task = str(user_specified_task).strip().lower()
             
-            # If user explicitly specified task, use that
             if user_task in ["classification", "regression"]:
                 print(f"[INFO] Using user-specified task: {user_task}")
                 return user_task
             
-            # If model is logistic, force classification (even if data looks numeric)
             if model_name == "logistic":
                 print(f"[INFO] Model 'logistic' detected, forcing classification task")
                 return "classification"
             
-            # If model is linear, polynomial, or random_forest, need to analyze data
-            # First try to detect if this is classification data
             y_series = pd.Series(y).astype(str).str.strip()
             unique_values = y_series.nunique()
             
-            # If few unique values, could be classification
             if unique_values <= 10:
-                # Check if values look like classes (strings or integers)
                 try:
-                    # Try to convert to numeric and see if they're integers
                     y_numeric = pd.to_numeric(y_series, errors='coerce')
                     if y_numeric.notna().all():
-                        # All values are numeric
                         if y_numeric.apply(float.is_integer).all() and unique_values <= 10:
-                            print(f"[INFO] Detected classification (integer classes: {sorted(y_numeric.unique().tolist())})")
+                            print(f"[INFO] Detected classification (integer classes)")
                             return "classification"
                 except:
                     pass
                 
-                # Check for string categories
                 if unique_values <= 10:
-                    print(f"[INFO] Detected classification (unique string values: {sorted(y_series.unique().tolist())})")
+                    print(f"[INFO] Detected classification (string categories)")
                     return "classification"
             
-            # Default to regression
             print(f"[INFO] Detected regression (continuous target)")
             return "regression"
 
@@ -250,190 +184,95 @@ implementation:
 
         try:
             print("="*80)
-            print("MODEL TRAINING STARTED (linear | logistic | polynomial | random_forest)")
+            print("MODEL TRAINING STARTED")
             print("="*80)
 
-            # FIXED: Use the new load_data_file function instead of load_parquet_df
             X = load_data_file(args.X_data)
             print(f"[INFO] X shape: {X.shape}")
-            print("[INFO] First 5 rows of X:")
-            print(X.head())
             print("[INFO] X columns:", X.columns.tolist())
-            print("[INFO] X dtypes:")
-            print(X.dtypes)
 
             y_df = load_data_file(args.y_data)
             print(f"[INFO] y_df shape: {y_df.shape}")
-            print("[INFO] First 5 rows of y_df:")
-            print(y_df.head())
+            print("[INFO] y_df columns:", y_df.columns.tolist() if isinstance(y_df, pd.DataFrame) else ["single_column"])
+            print("[INFO] Sample y values:", y_df.head(5).values.flatten().tolist()[:5])
             
+            # Extract target variable
             if isinstance(y_df, pd.DataFrame):
                 if y_df.shape[1] == 1 and not args.target_column:
                     y = y_df.iloc[:, 0].copy()
-                    print(f"[INFO] Auto-detected single column: {y_df.columns[0]}")
+                    target_col_name = y_df.columns[0]
+                    print(f"[INFO] Using single column: {target_col_name}")
+                elif args.target_column:
+                    target_col_name = args.target_column.strip()
+                    if target_col_name not in y_df.columns:
+                        raise ValueError(f"Target column '{target_col_name}' not found. Available: {list(y_df.columns)}")
+                    y = y_df[target_col_name].copy()
+                    print(f"[INFO] Using specified column: {target_col_name}")
                 else:
-                    col = args.target_column.strip()
-                    if not col:
-                        raise ValueError(f"y data has {y_df.shape[1]} columns. Provide --target_column. Available: {list(y_df.columns)}")
-                    y = y_df[col].copy()
+                    raise ValueError(f"y data has {y_df.shape[1]} columns. Provide --target_column. Available: {list(y_df.columns)}")
             else:
                 y = pd.Series(y_df).copy()
+                target_col_name = "target"
+                print(f"[INFO] Using Series as target")
+            
+            print(f"[INFO] Target variable name: {target_col_name}")
+            print(f"[INFO] Target shape: {y.shape}")
 
-            print(f"[INFO] Target variable shape: {y.shape}")
-            print(f"[INFO] Target variable type: {type(y)}")
-            print(f"[INFO] Target variable dtype: {y.dtype}")
-            print("[INFO] First 10 target values:")
-            print(y.head(10).tolist())
-
-            # align lengths/indices if mismatch
+            # Align lengths
             if len(X) != len(y):
                 print(f"[WARN] Length mismatch: X={len(X)}, y={len(y)}")
-                common_idx = X.index.intersection(y.index)
-                if len(common_idx) > 0:
-                    X = X.loc[common_idx].sort_index()
-                    y = y.loc[common_idx].sort_index()
-                else:
-                    m = min(len(X), len(y))
-                    X = X.reset_index(drop=True).iloc[:m, :].copy()
-                    y = y.reset_index(drop=True).iloc[:m].copy()
+                m = min(len(X), len(y))
+                X = X.iloc[:m].reset_index(drop=True)
+                y = y.iloc[:m].reset_index(drop=True)
+                print(f"[INFO] Aligned to {m} samples")
 
-            # Determine task based on combination of user input and data
+            # Determine task
             model_name = args.model_name.strip().lower()
             task = determine_task(y, args.model_type, model_name)
-            
-            print("===== TARGET VARIABLE INFO =====")
-            if task == "classification":
-                print("Classification task - target distribution:")
-                print(y.value_counts(dropna=False).to_string())
-                print(f"Unique values: {y.nunique()}")
-                print("Distribution percentages:")
-                print((y.value_counts(dropna=False, normalize=True) * 100).round(2).to_string())
-                
-                # For classification with numeric target that should be classes (like 0/1)
-                if pd.api.types.is_numeric_dtype(y):
-                    print(f"[INFO] Numeric target for classification - unique values: {sorted(y.unique().tolist())}")
-            else:
-                print("Regression task - converting target to numeric...")
-                y_numeric_check = pd.to_numeric(y, errors="coerce")
-                valid_numeric = y_numeric_check.notna()
-                
-                if valid_numeric.sum() == 0:
-                    print("[ERROR] Target variable contains no valid numeric values")
-                    print(f"[ERROR] Sample values from target: {y.head(10).tolist()}")
-                    raise ValueError("Target variable contains no valid numeric values for regression task")
-                
-                if not valid_numeric.all():
-                    invalid_count = int((~valid_numeric).sum())
-                    print(f"[WARN] Found {invalid_count} non-numeric values in target")
-                    print(f"[WARN] Sample of non-numeric values: {y[~valid_numeric].head(5).tolist()}")
-                
-                y_valid = y_numeric_check[valid_numeric]
-                min_val = float(y_valid.min())
-                max_val = float(y_valid.max())
-                mean_val = float(y_valid.mean())
-                std_val = float(y_valid.std())
-                
-                print("Target statistics (numeric values only):")
-                print(f"Min: {min_val:.4f}")
-                print(f"Max: {max_val:.4f}")
-                print(f"Mean: {mean_val:.4f}")
-                print(f"Std: {std_val:.4f}")
-                print(f"Valid numeric values: {int(valid_numeric.sum())}")
-                print(f"Missing/invalid values: {int((~valid_numeric).sum())}")
+            print(f"[INFO] Task: {task}")
+            print(f"[INFO] Model: {model_name}")
 
-            metrics = {"task": task, "samples": int(len(y)), "features": int(X.shape[1])}
-            model_obj = None
-
-            # prepare model config skeleton
+            # Initialize metrics and config
+            metrics = {"task": task, "samples": int(len(y)), "features": int(X.shape[1]), "target_column": target_col_name}
             model_config = {
                 "model_name": model_name,
                 "task": task,
                 "random_state": int(args.random_state),
+                "target_column": target_col_name,
                 "params": {}
             }
 
             if task == "classification":
-                print(f"[INFO] Classification task with model: {model_name}")
+                print("[INFO] Preparing for classification...")
                 
-                # Prepare target for classification
-                meta = try_load_metadata(args.preprocess_metadata)
-                label_mapping = meta.get("label_mapping") if meta else None
-
-                # Convert target to appropriate format
+                # Encode target
                 y_series = pd.Series(y).astype(str).str.strip()
+                le = LabelEncoder()
+                y_encoded = pd.Series(le.fit_transform(y_series), index=y.index)
+                label_info = {
+                    "classes": le.classes_.tolist(),
+                    "mapping": dict(zip(le.classes_, le.transform(le.classes_)))
+                }
+                print(f"[INFO] Encoded {len(label_info['classes'])} classes")
                 
-                # Try to preserve original values if they look like integers
-                try:
-                    y_int = pd.to_numeric(y_series, errors='coerce')
-                    if y_int.notna().all() and y_int.apply(float.is_integer).all():
-                        y_prepared = y_int.astype(int)
-                        map_info = {
-                            "mode": "integer_classes", 
-                            "classes": sorted(y_prepared.unique().tolist()),
-                            "label_mapping_reference": label_mapping
-                        }
-                        print(f"[INFO] Using integer classes: {sorted(y_prepared.unique().tolist())}")
-                    else:
-                        # Use label encoder for string classes
-                        le = LabelEncoder()
-                        y_prepared = pd.Series(le.fit_transform(y_series), index=y.index)
-                        map_info = {
-                            "mode": "label_encoder", 
-                            "classes": le.classes_.tolist(),
-                            "mapping": dict(zip(le.classes_, le.transform(le.classes_)))
-                        }
-                        print(f"[INFO] Encoded classes: {dict(zip(le.classes_, le.transform(le.classes_)))}")
-                except Exception as e:
-                    print(f"[WARN] Error in class encoding: {e}")
-                    # Fallback to label encoder
-                    le = LabelEncoder()
-                    y_prepared = pd.Series(le.fit_transform(y_series), index=y.index)
-                    map_info = {
-                        "mode": "label_encoder_fallback", 
-                        "classes": le.classes_.tolist()
-                    }
-
-                valid_mask = y_prepared.notna()
+                # Remove any NaN
+                valid_mask = y_encoded.notna()
                 if not valid_mask.all():
-                    dropped = int((~valid_mask).sum())
                     X = X.loc[valid_mask].reset_index(drop=True)
-                    y_prepared = y_prepared[valid_mask].reset_index(drop=True)
-                    print(f"[WARN] Dropped {dropped} invalid rows")
-
+                    y_encoded = y_encoded[valid_mask].reset_index(drop=True)
+                
                 if model_name == "logistic":
-                    print(f"[INFO] Training Logistic Regression")
-                    print(f"  - solver: {args.solver}")
-                    print(f"  - C: {args.C_value}")
-                    print(f"  - regularization: {args.regularization}")
-                    print(f"  - fit_intercept: {args.fit_intercept}")
-                    print(f"  - max_iter: {args.max_iter}")
-                    print(f"  - use_scaler: {args.use_scaler}")
-                    print(f"  - class_balance: {args.enbalance}")
+                    print("[INFO] Training Logistic Regression")
                     
-                    # Determine class weight
                     class_weight_val = 'balanced' if bool_from_str(args.enbalance) else None
-                    
-                    # Handle regularization
-                    penalty_map = {
-                        'none': None,
-                        'l1': 'l1',
-                        'l2': 'l2',
-                        'elasticnet': 'elasticnet'
-                    }
-                    penalty = penalty_map.get(args.regularization, None)
-                    
-                    # Adjust solver based on penalty
+                    penalty = args.regularization if args.regularization != "none" else None
                     solver = args.solver
-                    if penalty == 'l1':
-                        if solver not in ['liblinear', 'saga']:
-                            solver = 'liblinear'
-                            print(f"[INFO] Changed solver to {solver} for L1 regularization")
-                    elif penalty == 'elasticnet':
-                        if solver != 'saga':
-                            solver = 'saga'
-                            print(f"[INFO] Changed solver to {solver} for elasticnet regularization")
                     
-                    # Create logistic regression model
+                    if penalty == 'l1' and solver not in ['liblinear', 'saga']:
+                        solver = 'liblinear'
+                    elif penalty == 'elasticnet' and solver != 'saga':
+                        solver = 'saga'
+                    
                     lr_model = LogisticRegression(
                         penalty=penalty,
                         C=float(args.C_value),
@@ -444,40 +283,23 @@ implementation:
                         random_state=int(args.random_state)
                     )
                     
-                    # Scale if requested
                     if bool_from_str(args.use_scaler):
                         clf = Pipeline([('scaler', StandardScaler()), ('est', lr_model)])
                     else:
                         clf = lr_model
                         
                     model_config["params"] = {
-                        "solver": solver,
-                        "C": float(args.C_value),
-                        "penalty": penalty,
-                        "fit_intercept": bool_from_str(args.fit_intercept),
-                        "max_iter": int(args.max_iter),
-                        "class_weight": class_weight_val,
-                        "use_scaler": bool_from_str(args.use_scaler)
+                        "solver": solver, "C": float(args.C_value), "penalty": penalty,
+                        "fit_intercept": bool_from_str(args.fit_intercept), "max_iter": int(args.max_iter),
+                        "class_weight": class_weight_val, "use_scaler": bool_from_str(args.use_scaler)
                     }
 
                 elif model_name == "random_forest":
-                    print(f"[INFO] Training Random Forest Classifier")
-                    print(f"  - n_estimators: {args.n_estimators}")
-                    print(f"  - max_depth: {args.max_depth} (0 = unlimited)")
-                    print(f"  - min_samples_split: {args.min_samples_split}")
-                    print(f"  - min_samples_leaf: {args.min_samples_leaf}")
-                    print(f"  - max_features: {args.max_features}")
-                    print(f"  - bootstrap: {args.bootstrap}")
-                    print(f"  - oob_score: {args.oob_score}")
-                    print(f"  - class_balance: {args.enbalance}")
+                    print("[INFO] Training Random Forest Classifier")
                     
-                    # Determine class weight
                     class_weight_val = 'balanced' if bool_from_str(args.enbalance) else None
-                    
-                    # Parse max_features
                     max_features_parsed = parse_max_features(args.max_features, X.shape[1])
                     
-                    # Create Random Forest model
                     rf_model = RandomForestClassifier(
                         n_estimators=int(args.n_estimators),
                         max_depth=None if int(args.max_depth) <= 0 else int(args.max_depth),
@@ -504,95 +326,37 @@ implementation:
                     }
 
                 else:
-                    raise ValueError(f"For classification, only 'logistic' or 'random_forest' models are supported. Got: {model_name}")
+                    raise ValueError(f"Unsupported model for classification: {model_name}")
 
-                # Compute sample weights for imbalance if requested and not using class_weight
-                sample_weight = None
-                if bool_from_str(args.enbalance) and model_name != "random_forest":
-                    print("[INFO] Computing sample weights for imbalance")
-                    try:
-                        sample_weight = compute_sample_weight(class_weight='balanced', y=y_prepared)
-                    except Exception as e:
-                        print(f"[WARN] Could not compute sample weights: {e}")
-
-                # cross-validation
-                try:
-                    cv_scoring = 'accuracy' if model_name == 'logistic' else 'roc_auc_ovr' if y_prepared.nunique() > 2 else 'roc_auc'
-                    cv_scores = cross_val_score(clf, X, y_prepared, cv=5, scoring=cv_scoring)
-                    metrics[f"cv_{cv_scoring}_mean"] = float(cv_scores.mean())
-                    metrics[f"cv_{cv_scoring}_std"] = float(cv_scores.std())
-                    print(f"[INFO] CV {cv_scoring}: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
-                except Exception as e:
-                    print(f"[WARN] CV failed: {e}")
-
-                # fit model
-                try:
-                    if sample_weight is not None and model_name == "logistic":
-                        clf.fit(X, y_prepared, sample_weight=sample_weight)
-                    else:
-                        clf.fit(X, y_prepared)
-                except Exception as e:
-                    print(f"[ERROR] Fit failed: {e}")
-                    raise
-
-                # predictions and metrics
-                y_pred = clf.predict(X)
-                y_pred_proba = clf.predict_proba(X) if hasattr(clf, "predict_proba") else None
+                # Train
+                clf.fit(X, y_encoded)
                 
+                # Predictions and metrics
+                y_pred = clf.predict(X)
                 metrics.update({
-                    "accuracy_train": float(accuracy_score(y_prepared, y_pred)),
-                    "precision_train": float(precision_score(y_prepared, y_pred, average='weighted', zero_division=0)),
-                    "recall_train": float(recall_score(y_prepared, y_pred, average='weighted', zero_division=0)),
-                    "f1_train": float(f1_score(y_prepared, y_pred, average='weighted', zero_division=0)),
+                    "accuracy_train": float(accuracy_score(y_encoded, y_pred)),
+                    "precision_train": float(precision_score(y_encoded, y_pred, average='weighted', zero_division=0)),
+                    "recall_train": float(recall_score(y_encoded, y_pred, average='weighted', zero_division=0)),
+                    "f1_train": float(f1_score(y_encoded, y_pred, average='weighted', zero_division=0)),
                     "model": model_name,
-                    "balanced": bool_from_str(args.enbalance),
-                    "label_info": map_info
+                    "label_info": label_info
                 })
                 
-                # Add log loss if probabilities available
-                if y_pred_proba is not None:
-                    try:
-                        metrics["log_loss_train"] = float(log_loss(y_prepared, y_pred_proba))
-                    except Exception:
-                        pass
-                
-                # Add ROC AUC for binary and multiclass
-                if y_pred_proba is not None:
-                    try:
-                        if y_prepared.nunique() == 2:
-                            metrics["roc_auc_train"] = float(roc_auc_score(y_prepared, y_pred_proba[:, 1]))
-                        else:
-                            metrics["roc_auc_ovr_train"] = float(roc_auc_score(y_prepared, y_pred_proba, multi_class='ovr', average='weighted'))
-                    except Exception:
-                        pass
-                
-                # Add OOB score for random forest if available
-                if model_name == "random_forest" and bool_from_str(args.oob_score) and hasattr(clf, "oob_score_"):
-                    metrics["oob_score"] = float(clf.oob_score_)
-                    print(f"[INFO] OOB Score: {clf.oob_score_:.4f}")
-
                 model_obj = clf
 
             elif task == "regression":
-                print(f"[INFO] Regression task with model: {model_name}")
+                print("[INFO] Preparing for regression...")
                 
+                # Convert to numeric
                 y_num = pd.to_numeric(y, errors="coerce")
                 valid_mask = y_num.notna()
                 if not valid_mask.all():
-                    dropped = int((~valid_mask).sum())
-                    print(f"[WARN] Dropping {dropped} rows with non-numeric target")
                     X = X.loc[valid_mask].reset_index(drop=True)
                     y_num = y_num[valid_mask].reset_index(drop=True)
-
+                
                 if model_name == "linear":
-                    print(f"[INFO] Training Linear Regression")
-                    print(f"  - regularization: {args.regularization}")
-                    print(f"  - C: {args.C_value}")
-                    print(f"  - fit_intercept: {args.fit_intercept}")
-                    print(f"  - max_iter: {args.max_iter}")
-                    print(f"  - use_scaler: {args.use_scaler}")
+                    print("[INFO] Training Linear Regression")
                     
-                    # Handle regularization
                     if args.regularization == "none":
                         reg = LinearRegression(fit_intercept=bool_from_str(args.fit_intercept))
                     elif args.regularization == "l2":
@@ -611,10 +375,7 @@ implementation:
                                        fit_intercept=bool_from_str(args.fit_intercept),
                                        random_state=int(args.random_state),
                                        max_iter=int(args.max_iter))
-                    else:
-                        raise ValueError(f"Unknown regularization type: {args.regularization}")
                     
-                    # Scale if requested
                     if bool_from_str(args.use_scaler):
                         reg = Pipeline([('scaler', StandardScaler()), ('est', reg)])
                     
@@ -627,22 +388,13 @@ implementation:
                     }
 
                 elif model_name == "polynomial":
-                    print(f"[INFO] Training Polynomial Regression")
-                    print(f"  - degree: {args.poly_degree}")
-                    print(f"  - regularization: {args.regularization}")
-                    print(f"  - C: {args.C_value}")
-                    print(f"  - fit_intercept: {args.fit_intercept}")
-                    print(f"  - max_iter: {args.max_iter}")
-                    print(f"  - use_scaler: {args.use_scaler}")
+                    print("[INFO] Training Polynomial Regression")
                     
-                    # Create polynomial features pipeline
                     poly_steps = [('poly', PolynomialFeatures(degree=int(args.poly_degree), include_bias=False))]
                     
-                    # Add scaler if requested
                     if bool_from_str(args.use_scaler):
                         poly_steps.append(('scaler', StandardScaler()))
                     
-                    # Add linear regression with optional regularization
                     if args.regularization == "none":
                         linear_model = LinearRegression(fit_intercept=bool_from_str(args.fit_intercept))
                     elif args.regularization == "l2":
@@ -675,19 +427,10 @@ implementation:
                     }
 
                 elif model_name == "random_forest":
-                    print(f"[INFO] Training Random Forest Regressor")
-                    print(f"  - n_estimators: {args.n_estimators}")
-                    print(f"  - max_depth: {args.max_depth} (0 = unlimited)")
-                    print(f"  - min_samples_split: {args.min_samples_split}")
-                    print(f"  - min_samples_leaf: {args.min_samples_leaf}")
-                    print(f"  - max_features: {args.max_features}")
-                    print(f"  - bootstrap: {args.bootstrap}")
-                    print(f"  - oob_score: {args.oob_score}")
+                    print("[INFO] Training Random Forest Regressor")
                     
-                    # Parse max_features
                     max_features_parsed = parse_max_features(args.max_features, X.shape[1])
                     
-                    # Create Random Forest model
                     rf_model = RandomForestRegressor(
                         n_estimators=int(args.n_estimators),
                         max_depth=None if int(args.max_depth) <= 0 else int(args.max_depth),
@@ -712,25 +455,12 @@ implementation:
                     }
 
                 else:
-                    raise ValueError(f"For regression, only 'linear', 'polynomial' or 'random_forest' models are supported. Got: {model_name}")
+                    raise ValueError(f"Unsupported model for regression: {model_name}")
 
-                # cross-validation
-                try:
-                    cv_scores = cross_val_score(reg, X, y_num, cv=5, scoring='r2')
-                    metrics["cv_r2_mean"] = float(cv_scores.mean())
-                    metrics["cv_r2_std"] = float(cv_scores.std())
-                    print(f"[INFO] CV R2: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
-                except Exception as e:
-                    print(f"[WARN] CV failed: {e}")
-
-                # fit model
-                try:
-                    reg.fit(X, y_num)
-                except Exception as e:
-                    print(f"[ERROR] Fit failed: {e}")
-                    raise
-
-                # predictions and metrics
+                # Train
+                reg.fit(X, y_num)
+                
+                # Predictions and metrics
                 y_pred = reg.predict(X)
                 metrics.update({
                     "r2_train": float(r2_score(y_num, y_pred)),
@@ -740,60 +470,12 @@ implementation:
                     "model": model_name
                 })
                 
-                # Add polynomial-specific info
-                if model_name == "polynomial":
-                    try:
-                        if hasattr(reg, 'named_steps'):
-                            poly_step = reg.named_steps.get('poly')
-                            if poly_step:
-                                n_features_in = poly_step.n_features_in_
-                                n_features_out = poly_step.n_output_features_
-                                metrics["poly_features_in"] = int(n_features_in)
-                                metrics["poly_features_out"] = int(n_features_out)
-                                print(f"[INFO] Polynomial features transformed: {n_features_in} -> {n_features_out}")
-                    except Exception:
-                        pass
-                
-                # Add OOB score for random forest if available
-                if model_name == "random_forest" and bool_from_str(args.oob_score) and hasattr(reg, "oob_score_"):
-                    metrics["oob_score"] = float(reg.oob_score_)
-                    print(f"[INFO] OOB Score: {reg.oob_score_:.4f}")
-
                 model_obj = reg
 
             else:
-                raise ValueError(f"Unsupported task '{task}'. Must be 'classification' or 'regression'.")
+                raise ValueError(f"Unsupported task: {task}")
 
-            # finalize model_config
-            model_config["trained_samples"] = int(len(X))
-            model_config["trained_features"] = int(X.shape[1])
-            
-            # Add feature importance for random forest
-            if model_name == "random_forest":
-                try:
-                    if task == "classification":
-                        feature_importances = model_obj.feature_importances_
-                    else:
-                        feature_importances = model_obj.feature_importances_
-                    
-                    # Create feature importance dictionary
-                    if isinstance(X, pd.DataFrame):
-                        feature_names = X.columns.tolist()
-                    else:
-                        feature_names = [f"feature_{i}" for i in range(X.shape[1])]
-                    
-                    importance_dict = {}
-                    for name, importance in zip(feature_names, feature_importances):
-                        importance_dict[name] = float(importance)
-                    
-                    # Sort by importance
-                    sorted_importance = dict(sorted(importance_dict.items(), key=lambda x: x[1], reverse=True))
-                    metrics["top_5_features"] = list(sorted_importance.items())[:5]
-                    
-                except Exception as e:
-                    print(f"[WARN] Could not extract feature importance: {e}")
-
-            # save model, metrics and config
+            # Save outputs
             ensure_dir_for(args.model_pickle)
             joblib.dump(model_obj, args.model_pickle)
 
@@ -807,9 +489,6 @@ implementation:
 
             print("="*80)
             print("SUCCESS: Training completed")
-            print("Model saved to:", args.model_pickle)
-            print("Metrics saved to:", args.metrics_json)
-            print("Model config saved to:", args.model_config)
             print("="*80)
 
         except Exception as e:
