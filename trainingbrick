@@ -1,7 +1,7 @@
-name: model training v10
+name: model training v11
 inputs:
-  - {name: X_data, type: Dataset, description: "Parquet file for features (DataFrame)"}
-  - {name: y_data, type: Dataset, description: "Parquet file for target (Series or single-column DataFrame) - already encoded"}
+  - {name: X_data, type: Dataset, description: "Parquet or CSV file for features (DataFrame)"}
+  - {name: y_data, type: Dataset, description: "Parquet or CSV file for target (Series or single-column DataFrame) - already encoded"}
   - {name: model_type, type: String, description: "classification or regression", optional: true, default: "classification"}
   - {name: enbalance, type: String, description: "true/false for class imbalance handling (classification only)", optional: true, default: "true"}
   - {name: target_column, type: String, description: "Optional. Column name inside y parquet if it has multiple columns", optional: true, default: ""}
@@ -54,8 +54,92 @@ implementation:
         def bool_from_str(s):
             return str(s).strip().lower() in ("1","true","t","yes","y")
 
-        def load_parquet_df(path):
-            return pd.read_csv(path)
+        def load_data_file(path):
+            """Load DataFrame from either Parquet or CSV file with auto-detection."""
+            print(f"[INFO] Loading data file: {path}")
+            
+            # Check if file exists
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Data file not found: {path}")
+            
+            # Get file size for logging
+            file_size = os.path.getsize(path)
+            print(f"[INFO] File size: {file_size} bytes")
+            
+            # Try to determine file type by extension
+            file_ext = os.path.splitext(path)[1].lower()
+            
+            try:
+                if file_ext == '.parquet':
+                    print("[INFO] Loading as Parquet file")
+                    df = pd.read_parquet(path)
+                    print(f"[INFO] Successfully loaded Parquet: {df.shape}")
+                    return df
+                
+                elif file_ext == '.csv':
+                    print("[INFO] Loading as CSV file")
+                    # Try multiple encodings for CSV
+                    encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252', 'utf-16']
+                    last_error = None
+                    
+                    for encoding in encodings:
+                        try:
+                            df = pd.read_csv(path, encoding=encoding, on_bad_lines='warn')
+                            print(f"[INFO] Successfully loaded CSV with {encoding} encoding: {df.shape}")
+                            return df
+                        except UnicodeDecodeError as e:
+                            last_error = e
+                            print(f"[DEBUG] Failed with encoding {encoding}: {e}")
+                            continue
+                        except Exception as e:
+                            last_error = e
+                            print(f"[DEBUG] Failed with encoding {encoding}: {e}")
+                            continue
+                    
+                    # If all encodings fail, try without specifying encoding
+                    try:
+                        df = pd.read_csv(path, encoding=None, engine='python', on_bad_lines='warn')
+                        print(f"[INFO] Successfully loaded CSV with default encoding: {df.shape}")
+                        return df
+                    except Exception as e:
+                        raise ValueError(f"Failed to read CSV file with any encoding. Last error: {last_error}")
+                
+                else:
+                    # For unknown extensions, try both formats
+                    print(f"[INFO] Unknown file extension '{file_ext}', trying auto-detection")
+                    
+                    # First try as Parquet
+                    try:
+                        df = pd.read_parquet(path)
+                        print(f"[INFO] Auto-detected as Parquet: {df.shape}")
+                        return df
+                    except Exception as e1:
+                        print(f"[DEBUG] Not a Parquet file: {e1}")
+                        
+                        # Try as CSV with multiple encodings
+                        encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
+                        for encoding in encodings:
+                            try:
+                                df = pd.read_csv(path, encoding=encoding, on_bad_lines='warn')
+                                print(f"[INFO] Auto-detected as CSV with {encoding} encoding: {df.shape}")
+                                return df
+                            except Exception as e2:
+                                print(f"[DEBUG] Failed as CSV with {encoding}: {e2}")
+                                continue
+                        
+                        raise ValueError(f"Cannot determine file format for {path}. Tried Parquet and CSV formats.")
+                        
+            except Exception as e:
+                print(f"[ERROR] Failed to load file {path}: {str(e)}")
+                # Try to read first few bytes to diagnose
+                try:
+                    with open(path, 'rb') as f:
+                        first_bytes = f.read(100)
+                        print(f"[DEBUG] First 100 bytes (hex): {first_bytes.hex()}")
+                        print(f"[DEBUG] First 100 bytes (ascii): {first_bytes[:50]}")
+                except:
+                    pass
+                raise
 
         def try_load_metadata(path):
             if not path or not os.path.exists(path):
@@ -170,12 +254,20 @@ implementation:
             print("MODEL TRAINING STARTED (linear | logistic | polynomial | random_forest)")
             print("="*80)
 
-            X = load_parquet_df(args.X_data)
+            # FIXED: Use the new load_data_file function instead of load_parquet_df
+            X = load_data_file(args.X_data)
             print(f"[INFO] X shape: {X.shape}")
             print("[INFO] First 5 rows of X:")
             print(X.head())
+            print("[INFO] X columns:", X.columns.tolist())
+            print("[INFO] X dtypes:")
+            print(X.dtypes)
 
-            y_df = load_parquet_df(args.y_data)
+            y_df = load_data_file(args.y_data)
+            print(f"[INFO] y_df shape: {y_df.shape}")
+            print("[INFO] First 5 rows of y_df:")
+            print(y_df.head())
+            
             if isinstance(y_df, pd.DataFrame):
                 if y_df.shape[1] == 1 and not args.target_column:
                     y = y_df.iloc[:, 0].copy()
@@ -183,10 +275,16 @@ implementation:
                 else:
                     col = args.target_column.strip()
                     if not col:
-                        raise ValueError(f"y parquet has {y_df.shape[1]} columns. Provide --target_column. Available: {list(y_df.columns)}")
+                        raise ValueError(f"y data has {y_df.shape[1]} columns. Provide --target_column. Available: {list(y_df.columns)}")
                     y = y_df[col].copy()
             else:
                 y = pd.Series(y_df).copy()
+
+            print(f"[INFO] Target variable shape: {y.shape}")
+            print(f"[INFO] Target variable type: {type(y)}")
+            print(f"[INFO] Target variable dtype: {y.dtype}")
+            print("[INFO] First 10 target values:")
+            print(y.head(10).tolist())
 
             # align lengths/indices if mismatch
             if len(X) != len(y):
