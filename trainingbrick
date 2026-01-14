@@ -55,7 +55,6 @@ implementation:
             return str(s).strip().lower() in ("1","true","t","yes","y")
 
         def convert_to_serializable(obj):
-            """Convert numpy/pandas types to Python native types for JSON serialization."""
             if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
                 return int(obj)
             elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
